@@ -46,5 +46,13 @@ MIN_CLIPS_FOR_CLUSTERING = 4  # minimum clips to attempt clustering
 LOW_EVIDENCE_THRESHOLD = 5    # fewer total tests → "low evidence" warning
 WORD_TYPES = ["noun", "verb", "pronoun", "question_word", "adjective", "other"]
 
+# ── Sequences (Phase 5) ────────────────────────────────────────────
+SPLIT_TOP_DB_DEFAULT = 25       # librosa.effects.split top_db default
+SPLIT_TOP_DB_MIN = 10
+SPLIT_TOP_DB_MAX = 60
+MIN_SEGMENT_DURATION = 0.05     # seconds — ignore segments shorter than this
+SEQUENCE_AUDIO_DIR_NAME = "sequence_recordings"
+
 # ── Schema version (bumped on every migration) ────────────────────
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+

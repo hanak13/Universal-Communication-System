@@ -172,3 +172,4 @@ if __name__ == "__main__":
     test_word_status_default()
     test_history_logged()
     print("All word tests passed ✓")
+

@@ -192,6 +192,9 @@ def init_db(db_path: str | None = None) -> sqlite3.Connection:
         if cur_ver < 4:
             _safe_alter(conn, _MIGRATION_V4)
 
+        # V5: sequences table
+        if cur_ver < 5:
+            conn.executescript(_MIGRATION_V5)
 
         _set_version(conn, SCHEMA_VERSION)
         conn.commit()
@@ -565,3 +568,176 @@ def clips_without_features(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY c.id
         """
     ).fetchall()
+
+
+# ── CRUD: phrases ─────────────────────────────────────────────────
+
+def save_phrase(
+    conn: sqlite3.Connection,
+    text: str,
+    meaning: str | None = None,
+    status: str = "unverified",
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO phrases (text, meaning, status, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (text, meaning, status, _utcnow()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_phrase_by_text(conn: sqlite3.Connection, text: str) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM phrases WHERE text = ?", (text,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_all_phrases(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM phrases ORDER BY text").fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_phrase(
+    conn: sqlite3.Connection,
+    phrase_id: int,
+    **fields,
+) -> None:
+    old = conn.execute("SELECT * FROM phrases WHERE id = ?", (phrase_id,)).fetchone()
+    if old is None:
+        return
+    old = dict(old)
+    for col, new_val in fields.items():
+        if col in ("id", "created_at"):
+            continue
+        old_val = old.get(col)
+        if str(old_val) != str(new_val):
+            log_history(conn, "phrases", phrase_id,
+                        json.dumps({col: old_val}),
+                        json.dumps({col: new_val}))
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    vals = list(fields.values()) + [phrase_id]
+    conn.execute(f"UPDATE phrases SET {sets} WHERE id = ?", vals)
+    conn.commit()
+
+
+# ── CRUD: rules ───────────────────────────────────────────────────
+
+def save_rule(
+    conn: sqlite3.Connection,
+    rule_type: str,
+    definition: dict,
+    status: str = "unverified",
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO rules (rule_type, definition, status, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (rule_type, json.dumps(definition), status, _utcnow()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_all_rules(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM rules ORDER BY rule_type, id").fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["definition"] = json.loads(d["definition"])
+        result.append(d)
+    return result
+
+
+def get_rules_by_type(conn: sqlite3.Connection, rule_type: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM rules WHERE rule_type = ? ORDER BY id",
+        (rule_type,),
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["definition"] = json.loads(d["definition"])
+        result.append(d)
+    return result
+
+
+def get_rule_by_id(conn: sqlite3.Connection, rule_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM rules WHERE id = ?", (rule_id,)).fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    d["definition"] = json.loads(d["definition"])
+    return d
+
+
+def update_rule(
+    conn: sqlite3.Connection,
+    rule_id: int,
+    **fields,
+) -> None:
+    old = get_rule_by_id(conn, rule_id)
+    if old is None:
+        return
+    for col, new_val in fields.items():
+        if col in ("id", "created_at"):
+            continue
+        old_val = old.get(col)
+        if col == "definition":
+            old_ser = json.dumps(old_val)
+            new_ser = json.dumps(new_val)
+            if old_ser != new_ser:
+                log_history(conn, "rules", rule_id, json.dumps({col: old_val}),
+                            json.dumps({col: new_val}))
+        elif str(old_val) != str(new_val):
+            log_history(conn, "rules", rule_id,
+                        json.dumps({col: old_val}),
+                        json.dumps({col: new_val}))
+    update_fields = {}
+    for k, v in fields.items():
+        if k == "definition":
+            update_fields[k] = json.dumps(v)
+        else:
+            update_fields[k] = v
+    sets = ", ".join(f"{k} = ?" for k in update_fields)
+    vals = list(update_fields.values()) + [rule_id]
+    conn.execute(f"UPDATE rules SET {sets} WHERE id = ?", vals)
+    conn.commit()
+
+
+def delete_rule(conn: sqlite3.Connection, rule_id: int) -> None:
+    conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
+    conn.commit()
+
+
+# ── CRUD: sequences ──────────────────────────────────────────────
+
+def save_sequence(
+    conn: sqlite3.Connection,
+    filename: str,
+    recognized: list[dict],
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO sequences (filename, recognized, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (filename, json.dumps(recognized), _utcnow()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_all_sequences(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM sequences ORDER BY id DESC").fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["recognized"] = json.loads(d["recognized"])
+        result.append(d)
+    return result
+

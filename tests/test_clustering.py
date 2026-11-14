@@ -76,3 +76,4 @@ def test_metrics_and_outliers():
     outliers = find_outliers(["a", "a", "a"], np.array([0, 0, 1]), ["f1", "f2", "f3"])
     assert len(outliers) == 1
     assert outliers[0]["filename"] == "f3"
+

@@ -56,6 +56,8 @@ PAGES = [
     "🔬 Clustering",
     "❓ Pending",
     "📝 Words",
+    "🔗 Sequences",
+    "📏 Rules",
     "✅ Test",
     "📋 Summary",
 ]
@@ -616,6 +618,466 @@ elif page == "📝 Words":
                     add_variant(conn, w["id"], new_variant)
                 st.success("Saved.")
                 st.rerun()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: Sequences
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+elif page == "🔗 Sequences":
+    st.title("🔗 Sequence Analysis")
+    st.caption(
+        "Upload or record a long clip. It will be split into word segments "
+        "and each segment will be recognized. Meanings are *hypotheses*."
+    )
+
+    import matplotlib.pyplot as plt
+    from sequences import (
+        split_audio, extract_segment_features, recognize_sequence,
+        count_ngrams, compare_phrase_vs_words,
+    )
+    from recognizer import Recognizer
+    from rule_engine import apply_rules, suggest_for_gap, arrange_sentence
+
+    # ── Build recognizer from known clips ──────────────────────────
+    all_clips = get_clips(conn)
+    clip_data = []
+    for c in all_clips:
+        feat = get_features(conn, c["id"])
+        if feat:
+            clip_data.append({
+                "id": c["id"], "filename": c["filename"],
+                "label": c["label"], "vector": feat["vector"],
+            })
+
+    recognizer = Recognizer()
+    if len(clip_data) >= 2:
+        recognizer.fit(
+            [d["vector"] for d in clip_data],
+            [d["label"] for d in clip_data],
+        )
+
+    # ── Upload audio ───────────────────────────────────────────────
+    st.subheader("🎤 Input Audio")
+    input_mode = st.radio("Source", ["Upload WAV file", "Record in browser"], horizontal=True)
+
+    audio_bytes = None
+    if input_mode == "Upload WAV file":
+        uploaded = st.file_uploader("Upload a WAV file", type=["wav"])
+        if uploaded:
+            audio_bytes = uploaded.getvalue()
+    else:
+        recorded = st.audio_input("🎤 Press to record a sequence")
+        if recorded:
+            audio_bytes = recorded.getvalue()
+
+    top_db = st.slider(
+        "Silence split threshold (top_db)",
+        SPLIT_TOP_DB_MIN, SPLIT_TOP_DB_MAX, SPLIT_TOP_DB_DEFAULT,
+        help="Lower = more aggressive splitting (detects quieter pauses as silence).",
+    )
+
+    if audio_bytes is not None:
+        st.audio(audio_bytes, format="audio/wav")
+
+        if not recognizer.is_fitted:
+            st.warning("Need at least 2 clips with features to recognize words. "
+                       "Go to **Analysis** and analyze your clips first.")
+            st.stop()
+
+        # Save temp file for processing
+        seq_dir = os.path.join(os.path.dirname(AUDIO_DIR), SEQUENCE_AUDIO_DIR_NAME)
+        os.makedirs(seq_dir, exist_ok=True)
+        import time
+        tmp_path = os.path.join(seq_dir, f"seq_{int(time.time()*1000)}.wav")
+        with open(tmp_path, "wb") as f:
+            f.write(audio_bytes)
+
+        # Split and recognize
+        with st.spinner("Splitting audio into segments…"):
+            segments = split_audio(tmp_path, top_db=top_db)
+
+        if not segments:
+            st.warning("No word segments found. Try lowering the split threshold.")
+            st.stop()
+
+        st.info(f"Found **{len(segments)}** segment(s).")
+
+        # Get pending vectors for reuse
+        pending_vecs = get_pending_sounds_with_vectors(conn)
+
+        with st.spinner("Recognizing segments…"):
+            results = recognize_sequence(segments, recognizer, pending_vecs)
+
+        # ── Show results ───────────────────────────────────────────
+        st.divider()
+        st.subheader("📝 Recognized Sequence")
+
+        labels = [r["label"] for r in results]
+        recognized_text = " ".join(labels)
+        st.markdown(f"### `{recognized_text}`")
+
+        # ── Build word lookup ──────────────────────────────────────
+        all_words = get_all_words(conn)
+        word_lookup: dict[str, dict] = {}
+        for w in all_words:
+            word_lookup[w["canonical"]] = w
+            # Also index variants
+            for v in get_variants(conn, w["id"]):
+                word_lookup[v] = w
+
+        # ── Word-by-word meanings ──────────────────────────────────
+        st.subheader("🔤 Word-by-Word Meanings")
+        word_meanings = []
+        rows = []
+        for r in results:
+            lbl = r["label"]
+            info = word_lookup.get(lbl)
+            meaning = info["meaning"] if info else None
+            word_meanings.append(meaning)
+
+            status = ""
+            if r["is_unknown"]:
+                status = "❓ Unknown"
+            elif info:
+                status = "✅" if info.get("status") == "verified" else "❓ Unverified"
+
+            rows.append({
+                "Word": lbl,
+                "Meaning (hypothesis)": meaning or "?",
+                "Status": status,
+                "Distance": f"{r['distance']:.2f}",
+                "Time": f"{r['start_sec']:.2f}–{r['end_sec']:.2f}s",
+            })
+
+        import pandas as pd_seq
+        st.dataframe(pd_seq.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # ── Phrase-level meaning ───────────────────────────────────
+        st.subheader("📖 Phrase Meaning")
+        phrase_text = " ".join(labels)
+        saved_phrase = get_phrase_by_text(conn, phrase_text)
+
+        if saved_phrase:
+            st.success(
+                f"**Known phrase:** *{saved_phrase['meaning'] or '?'}* "
+                f"({saved_phrase['status']})"
+            )
+            comparison = compare_phrase_vs_words(
+                saved_phrase["meaning"], word_meanings,
+            )
+            st.write(f"**Joined word meanings:** {comparison['joined_words']}")
+            if comparison["match"]:
+                st.info("✅ Phrase meaning matches joined word meanings.")
+            else:
+                st.warning("⚠️ Phrase meaning differs from joined word meanings.")
+        else:
+            st.warning("🆕 **New sentence found** — no saved phrase for this sequence.")
+
+            # ── Sentence Arrangement & Rule-based suggestions ─────
+            all_rules = get_all_rules(conn)
+            arranged = arrange_sentence(labels, word_lookup, all_rules, saved_phrase=None)
+
+            if arranged["ranked_suggestions"]:
+                st.subheader("💡 Ranked Suggestions (Tentative)")
+                for idx, s in enumerate(arranged["ranked_suggestions"]):
+                    st.markdown(
+                        f"**{idx + 1}.** `[tentative]` **{s['suggestion']}** "
+                        f"— *{s['reason']}* (confidence: {s['confidence']:.0%})"
+                    )
+
+            if arranged["observations"]:
+                st.subheader("📏 Rule Analysis")
+                for obs in arranged["observations"]:
+                    if obs.get("matched"):
+                        st.success(f"✅ {obs['message']}")
+                        if "english_reorder" in obs:
+                            eng_words = obs["english_reorder"]
+                            eng_meanings = [
+                                word_lookup.get(w, {}).get("meaning", w)
+                                for w in eng_words
+                            ]
+                            st.write(f"**English word order:** {' '.join(eng_meanings)}")
+                    else:
+                        st.info(f"ℹ️ {obs['message']}")
+
+            # Suggestions for unknowns / gaps
+            unknown_indices = [
+                i for i, r in enumerate(results) if r["is_unknown"]
+            ]
+            if unknown_indices and all_rules:
+                st.subheader("💡 Gap Analysis (Tentative Candidates)")
+                for gi in unknown_indices:
+                    suggs = suggest_for_gap(all_rules, labels, gi, word_lookup)
+                    if suggs:
+                        st.write(f"**Position {gi + 1}** (`{labels[gi]}`):")
+                        for s in suggs[:5]:
+                            info = word_lookup.get(s["candidate"], {})
+                            meaning = info.get("meaning", "?")
+                            pn = s.get("person_number_desc") or s.get("person_number", "")
+                            pn_str = f" ({pn})" if pn else ""
+                            st.write(
+                                f"  → `[tentative]` **{s['candidate']}** = *{meaning}*{pn_str} "
+                                f"— {s['reason']} (confidence: {s['confidence']:.0%})"
+                            )
+                    else:
+                        st.write(f"**Position {gi + 1}** (`{labels[gi]}`): no rule suggestions.")
+
+            # Initial default for phrase meaning input
+            default_phrase_meaning = ""
+            if arranged["ranked_suggestions"]:
+                default_phrase_meaning = arranged["ranked_suggestions"][0]["suggestion"]
+            else:
+                default_phrase_meaning = arranged["wbw_joined"]
+
+            # ── Right/Wrong on suggestion ──────────────────────────
+            st.divider()
+            st.subheader("✅ Confirm or Correct")
+            st.caption("Right saves the phrase as a new verified entry. Wrong lets you type the correct meaning.")
+
+            phrase_meaning_input = st.text_input(
+                "Phrase meaning (confirm hypothesis or correct)",
+                value=default_phrase_meaning,
+                key="seq_phrase_meaning",
+            )
+
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                if st.button("👍 Right — save phrase", key="seq_right", type="primary"):
+                    pid = save_phrase(conn, phrase_text, phrase_meaning_input)
+                    log_history(conn, "phrases", pid, None,
+                                json.dumps({"action": "created_from_sequence",
+                                            "text": phrase_text}))
+                    # Save unknowns as pending
+                    for r in results:
+                        if r.get("is_unknown") and r.get("pending_name"):
+                            save_pending_sound(
+                                conn, r["pending_name"],
+                                vector=r["vector"],
+                            )
+                    st.success(f"✅ Saved phrase: **{phrase_text}** = *{phrase_meaning_input}*")
+                    st.rerun()
+            with sc2:
+                if st.button("👎 Wrong", key="seq_wrong"):
+                    st.session_state["seq_show_correction"] = True
+
+            if st.session_state.get("seq_show_correction"):
+                correction = st.text_input(
+                    "What is the correct meaning?",
+                    key="seq_correction",
+                )
+                if st.button("Submit correction", key="seq_submit_corr"):
+                    if correction:
+                        pid = save_phrase(conn, phrase_text, correction)
+                        log_history(conn, "phrases", pid, None,
+                                    json.dumps({"action": "corrected_from_sequence",
+                                                "text": phrase_text}))
+                        for r in results:
+                            if r.get("is_unknown") and r.get("pending_name"):
+                                save_pending_sound(
+                                    conn, r["pending_name"],
+                                    vector=r["vector"],
+                                )
+                        st.session_state["seq_show_correction"] = False
+                        st.success(f"✅ Saved corrected phrase: *{correction}*")
+                        st.rerun()
+
+        # ── N-gram bar charts ──────────────────────────────────────
+        st.divider()
+        st.subheader("📊 N-gram Frequencies")
+
+        if len(labels) >= 2:
+            bigrams = count_ngrams(labels, 2)
+            if bigrams:
+                fig_bi, ax_bi = plt.subplots(figsize=(8, 3))
+                ax_bi.barh(list(bigrams.keys())[:15], list(bigrams.values())[:15])
+                ax_bi.set_xlabel("Count")
+                ax_bi.set_title("Bigrams")
+                ax_bi.invert_yaxis()
+                st.pyplot(fig_bi)
+                plt.close(fig_bi)
+
+        if len(labels) >= 3:
+            trigrams = count_ngrams(labels, 3)
+            if trigrams:
+                fig_tri, ax_tri = plt.subplots(figsize=(8, 3))
+                ax_tri.barh(list(trigrams.keys())[:15], list(trigrams.values())[:15])
+                ax_tri.set_xlabel("Count")
+                ax_tri.set_title("Trigrams")
+                ax_tri.invert_yaxis()
+                st.pyplot(fig_tri)
+                plt.close(fig_tri)
+
+        # ── Save sequence to DB ────────────────────────────────────
+        seq_data = [
+            {"label": r["label"], "distance": r["distance"],
+             "is_unknown": r["is_unknown"],
+             "start_sec": r["start_sec"], "end_sec": r["end_sec"]}
+            for r in results
+        ]
+        save_sequence(conn, os.path.basename(tmp_path), seq_data)
+
+    # ── Show past sequences ────────────────────────────────────────
+    st.divider()
+    st.subheader("📜 Past Sequences")
+    past = get_all_sequences(conn)
+    if past:
+        for seq in past[:10]:
+            labels_past = [s["label"] for s in seq["recognized"]]
+            st.caption(
+                f"`{seq['created_at']}` — {seq['filename']}: "
+                f"**{' '.join(labels_past)}**"
+            )
+    else:
+        st.info("No sequences analyzed yet.")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: Rules
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+elif page == "📏 Rules":
+    st.title("📏 Rule Management")
+    st.caption(
+        "Rules are data — word order patterns and pronoun-verb agreements. "
+        "Each is a *hypothesis* until verified."
+    )
+
+    from rule_engine import all_plugins
+
+    available_types = list(all_plugins().keys())
+
+    # ── Add a new rule ─────────────────────────────────────────────
+    st.subheader("➕ Add a Rule")
+
+    if not available_types:
+        st.warning("No rule plug-ins found. Add .py files to the rules/ directory.")
+    else:
+        rule_type = st.selectbox("Rule type", available_types, key="new_rule_type")
+
+        if rule_type == "word_order":
+            st.markdown("**Word Order Rule** — define the word-type pattern and English reorder.")
+            wo_pattern = st.text_input(
+                "Pattern (comma-separated word types)",
+                placeholder="pronoun, question_word, verb",
+                key="wo_pattern",
+            )
+            wo_english = st.text_input(
+                "English order (comma-separated word types)",
+                placeholder="question_word, verb, pronoun",
+                key="wo_english",
+            )
+            wo_label = st.text_input("Label", placeholder="question sentence", key="wo_label")
+
+            if st.button("💾 Save word order rule", key="save_wo"):
+                pattern = [p.strip() for p in wo_pattern.split(",") if p.strip()]
+                english = [p.strip() for p in wo_english.split(",") if p.strip()]
+                if not pattern or not english:
+                    st.warning("Fill in both pattern and English order.")
+                else:
+                    defn = {"pattern": pattern, "english_order": english, "label": wo_label}
+                    rid = save_rule(conn, "word_order", defn)
+                    log_history(conn, "rules", rid, None,
+                                json.dumps({"action": "created", "type": "word_order"}))
+                    st.success(f"✅ Saved word order rule #{rid}")
+                    st.rerun()
+
+        elif rule_type == "agreement":
+            st.markdown("**Agreement Rule** — define pronoun ↔ verb form pairs.")
+            n_pairs = st.number_input("Number of pairs", 1, 20, 3, key="ag_npairs")
+            pairs = []
+            for i in range(int(n_pairs)):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    pron = st.text_input(f"Pronoun #{i+1}", key=f"ag_pron_{i}")
+                with c2:
+                    verb = st.text_input(f"Verb form #{i+1}", key=f"ag_verb_{i}")
+                with c3:
+                    pn = st.text_input(f"Person/number #{i+1}", key=f"ag_pn_{i}",
+                                       placeholder="e.g. 2sg")
+                if pron.strip() and verb.strip():
+                    pairs.append({
+                        "pronoun": pron.strip().lower(),
+                        "verb_form": verb.strip().lower(),
+                        "person_number": pn.strip(),
+                    })
+
+            ag_label = st.text_input("Label", placeholder="pronoun-verb agreement",
+                                      key="ag_label")
+
+            if st.button("💾 Save agreement rule", key="save_ag"):
+                if not pairs:
+                    st.warning("Add at least one pronoun-verb pair.")
+                else:
+                    defn = {"pairs": pairs, "label": ag_label}
+                    rid = save_rule(conn, "agreement", defn)
+                    log_history(conn, "rules", rid, None,
+                                json.dumps({"action": "created", "type": "agreement"}))
+                    st.success(f"✅ Saved agreement rule #{rid}")
+                    st.rerun()
+
+        else:
+            # Generic JSON editor for unknown rule types
+            raw_json = st.text_area("Definition (JSON)", value="{}", key="gen_defn")
+            if st.button("💾 Save rule", key="save_gen"):
+                try:
+                    defn = json.loads(raw_json)
+                    rid = save_rule(conn, rule_type, defn)
+                    log_history(conn, "rules", rid, None,
+                                json.dumps({"action": "created", "type": rule_type}))
+                    st.success(f"✅ Saved rule #{rid}")
+                    st.rerun()
+                except json.JSONDecodeError as e:
+                    st.error(f"Invalid JSON: {e}")
+
+    # ── List existing rules ────────────────────────────────────────
+    st.divider()
+    st.subheader("📋 Existing Rules")
+    rules = get_all_rules(conn)
+    if not rules:
+        st.info("No rules yet.")
+    else:
+        for rule in rules:
+            plugin_cls = all_plugins().get(rule["rule_type"])
+            desc = plugin_cls.describe(rule["definition"]) if plugin_cls else str(rule["definition"])
+            status_icon = "✅" if rule["status"] == "verified" else "❓"
+
+            with st.expander(
+                f"{status_icon} Rule #{rule['id']}: {rule['rule_type']} — {desc}",
+                expanded=False,
+            ):
+                st.write(f"**Status:** {rule['status']}")
+                st.write(f"**Created:** {rule['created_at']}")
+
+                edit_def_str = st.text_area(
+                    "Definition (JSON data)",
+                    value=json.dumps(rule["definition"], indent=2),
+                    key=f"rdef_{rule['id']}",
+                    height=120,
+                )
+
+                new_status = st.selectbox(
+                    "Status", ["unverified", "verified"],
+                    index=0 if rule["status"] == "unverified" else 1,
+                    key=f"rstatus_{rule['id']}",
+                )
+
+                rc1, rc2 = st.columns(2)
+                with rc1:
+                    if st.button("💾 Save changes", key=f"rupdate_{rule['id']}"):
+                        try:
+                            parsed_def = json.loads(edit_def_str)
+                            update_rule(conn, rule["id"], definition=parsed_def, status=new_status)
+                            st.success("Rule updated.")
+                            st.rerun()
+                        except json.JSONDecodeError as err:
+                            st.error(f"Invalid JSON: {err}")
+                with rc2:
+                    if st.button("🗑️ Delete", key=f"rdelete_{rule['id']}"):
+                        log_history(conn, "rules", rule["id"],
+                                    json.dumps(rule["definition"]),
+                                    json.dumps({"action": "deleted"}))
+                        delete_rule(conn, rule["id"])
+                        st.success("Deleted.")
+                        st.rerun()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -131,3 +131,4 @@ if __name__ == "__main__":
     test_pending_name_empty()
     test_recognizer_unfitted()
     print("All recognizer tests passed ✓")
+
