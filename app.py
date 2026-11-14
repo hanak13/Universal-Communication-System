@@ -55,6 +55,9 @@ PAGES = [
     "📊 Analysis",
     "🔬 Clustering",
     "❓ Pending",
+    "📝 Words",
+    "✅ Test",
+    "📋 Summary",
 ]
 page = st.sidebar.radio("Navigate", PAGES)
 
@@ -545,3 +548,220 @@ elif page == "❓ Pending":
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: Words
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+elif page == "📝 Words":
+    st.title("📝 Word Dictionary")
+    st.caption("All hypothesised words. Edit meanings, add variants, change status.")
+
+    words = get_all_words(conn)
+    if not words:
+        st.info("No words yet. Name a pending sound to create one.")
+        st.stop()
+
+    for w in words:
+        conf, total = word_confidence(w)
+        status_icon = "✅" if w["status"] == "verified" else "❓"
+        conf_str = f"{conf:.0%}" if total > 0 else "—"
+
+        with st.expander(
+            f"{status_icon} **{w['canonical']}** — "
+            f"hypothesis: *{w['meaning'] or '?'}* "
+            f"({conf_str}, {total} tests)",
+            expanded=False,
+        ):
+            if total < LOW_EVIDENCE_THRESHOLD:
+                st.warning(f"⚠️ Low evidence — only {total} test(s) so far.")
+
+            # Show variants
+            variants = get_variants(conn, w["id"])
+            if variants:
+                st.write("**Variants:** " + ", ".join(variants))
+
+            st.write(f"**Type:** {w['word_type'] or '—'}")
+            st.write(f"**Person/Number:** {w['person_number'] or '—'}")
+            st.write(f"**Status:** {w['status']}")
+            st.write(f"**Confirmations:** {w.get('confirmations', 0)} "
+                     f"| **Rejections:** {w.get('rejections', 0)}")
+
+            # ── Edit meaning ──────────────────────────────────────
+            new_meaning = st.text_input(
+                "Update meaning hypothesis",
+                value=w["meaning"] or "",
+                key=f"wm_{w['id']}",
+            ).strip()
+
+            new_status = st.selectbox(
+                "Status",
+                ["unverified", "verified"],
+                index=0 if w["status"] == "unverified" else 1,
+                key=f"ws_{w['id']}",
+            )
+
+            new_variant = st.text_input(
+                "Add a spelling variant",
+                key=f"wv_{w['id']}",
+                placeholder="e.g. eenu",
+            ).strip().lower()
+
+            if st.button("💾 Save changes", key=f"wsave_{w['id']}"):
+                changes = {}
+                if new_meaning != (w["meaning"] or ""):
+                    changes["meaning"] = new_meaning or None
+                if new_status != w["status"]:
+                    changes["status"] = new_status
+                if changes:
+                    update_word(conn, w["id"], **changes)
+                if new_variant and new_variant != w["canonical"]:
+                    add_variant(conn, w["id"], new_variant)
+                st.success("Saved.")
+                st.rerun()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: Test  (Right / Wrong confirmation flow)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+elif page == "✅ Test":
+    st.title("✅ Test & Confirm Hypotheses")
+    st.caption(
+        "Listen to a clip and confirm or reject the recognizer's hypothesis. "
+        "This builds confidence scores."
+    )
+
+    words = get_all_words(conn)
+    if not words:
+        st.info("No words in the dictionary yet. Create some from the Pending page.")
+        st.stop()
+
+    # Build recognizer from all clips with features
+    all_clips = get_clips(conn)
+    clip_data = []
+    for c in all_clips:
+        feat = get_features(conn, c["id"])
+        if feat:
+            clip_data.append({
+                "id": c["id"], "filename": c["filename"],
+                "label": c["label"], "vector": feat["vector"],
+            })
+
+    if len(clip_data) < 2:
+        st.warning("Need at least 2 clips with features to test recognition.")
+        st.stop()
+
+    from recognizer import Recognizer
+    recognizer = Recognizer()
+    recognizer.fit([d["vector"] for d in clip_data],
+                   [d["label"] for d in clip_data])
+
+    if not recognizer.is_fitted:
+        st.warning("Recognizer could not be fitted.")
+        st.stop()
+
+    # Pick a clip to test
+    filenames = [d["filename"] for d in clip_data]
+    sel = st.selectbox("Pick a clip to test", filenames, key="test_clip")
+
+    if sel:
+        idx = filenames.index(sel)
+        clip = clip_data[idx]
+        wav = load_wav(clip["filename"])
+        if wav:
+            st.audio(wav, format="audio/wav")
+
+        result = recognizer.recognize(clip["vector"])
+
+        st.subheader("Recognition Result")
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            st.metric("Predicted label", result["label"])
+        with rc2:
+            st.metric("Distance", f"{result['distance']:.2f}")
+
+        # Look up the word
+        word = lookup_by_variant(conn, result["label"])
+        if word:
+            conf, total = word_confidence(word)
+            is_unverified = word.get("status") == "unverified"
+            status_badge = "⚠️ Unverified (Low Confidence Suggestion)" if is_unverified else "✅ Verified"
+
+            st.write(
+                f"**Meaning hypothesis:** *{word['meaning'] or '?'}* "
+                f"[{status_badge}]"
+            )
+            if is_unverified:
+                st.info("ℹ️ This word hypothesis is **unverified** — treat as tentative, low-confidence suggestion.")
+            elif total < LOW_EVIDENCE_THRESHOLD:
+                st.warning(f"⚠️ Low evidence — only {total} test(s).")
+
+            # Right / Wrong buttons
+            bcol1, bcol2 = st.columns(2)
+            with bcol1:
+                if st.button("👍 Right", key="right_btn", type="primary"):
+                    confirm_word(conn, word["id"])
+                    st.success("✅ Confirmed! Confidence updated.")
+                    st.rerun()
+            with bcol2:
+                if st.button("👎 Wrong", key="wrong_btn"):
+                    st.session_state["show_correction"] = True
+
+            if st.session_state.get("show_correction"):
+                correction = st.text_input(
+                    "What is the correct text or meaning?",
+                    key="correction_input",
+                    placeholder="e.g. 'cat' not 'dog'",
+                )
+                if st.button("Submit correction", key="submit_corr"):
+                    reject_word(conn, word["id"], correction=correction)
+                    st.session_state["show_correction"] = False
+                    st.warning("❌ Rejected. Correction recorded.")
+                    st.rerun()
+        elif result["is_unknown"]:
+            st.info("This clip was not recognized (unknown).")
+        else:
+            st.info(
+                f"Label **{result['label']}** is not yet in the word dictionary. "
+                f"Create it from the Pending page."
+            )
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: Summary
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+elif page == "📋 Summary":
+    st.title("📋 Hypothesis Summary")
+    st.caption("All words with their confidence and status.")
+
+    words = get_all_words(conn)
+    if not words:
+        st.info("No words yet.")
+        st.stop()
+
+    rows = []
+    for w in words:
+        conf, total = word_confidence(w)
+        variants = get_variants(conn, w["id"])
+        rows.append({
+            "Word": w["canonical"],
+            "Variants": ", ".join(variants) if variants else "—",
+            "Meaning (hypothesis)": w["meaning"] or "?",
+            "Type": w["word_type"] or "—",
+            "Status": w["status"],
+            "Tests": total,
+            "Confidence": f"{conf:.0%}" if total > 0 else "—",
+            "⚠️": "low evidence" if total < LOW_EVIDENCE_THRESHOLD else "",
+        })
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # ── Recent history ─────────────────────────────────────────────
+    st.divider()
+    st.subheader("📜 Recent Changes")
+    history = get_recent_history(conn, limit=15)
+    if history:
+        for h in history:
+            st.caption(
+                f"`{h['ts']}` — **{h['table_name']}** #{h['row_id']}: "
+                f"{h.get('new_value', '')}"
+            )
+    else:
+        st.info("No history yet.")
