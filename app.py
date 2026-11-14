@@ -5,6 +5,7 @@ clustering.py, recognizer.py.
 """
 import os
 import json
+from datetime import datetime
 
 import streamlit as st
 import numpy as np
@@ -39,6 +40,7 @@ from config import (
     SPLIT_TOP_DB_DEFAULT, SPLIT_TOP_DB_MIN, SPLIT_TOP_DB_MAX,
     MIN_SEGMENT_DURATION, SEQUENCE_AUDIO_DIR_NAME,
 )
+from evaluation import run_evaluation, export_report, generate_report, LIMITATIONS_TEXT
 
 # ── Initialise DB once per session ─────────────────────────────────
 if "conn" not in st.session_state:
@@ -50,6 +52,7 @@ conn = st.session_state.conn
 st.set_page_config(page_title="UCS — Universal Communication System", layout="wide")
 
 PAGES = [
+    "🏠 Dashboard",
     "🎙️ Record",
     "📚 Library",
     "📊 Analysis",
@@ -60,6 +63,7 @@ PAGES = [
     "📏 Rules",
     "✅ Test",
     "📋 Summary",
+    "📈 Evaluation",
 ]
 page = st.sidebar.radio("Navigate", PAGES)
 
@@ -74,9 +78,210 @@ if st.sidebar.button("↩️ Undo last change"):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: Dashboard (main landing page)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if page == "🏠 Dashboard":
+    st.title("🏠 UCS — Universal Communication System")
+    st.caption(
+        "Record or upload a clip to get instant recognition. "
+        "Every meaning is a *hypothesis* until verified."
+    )
+
+    # ── Quick stats row ────────────────────────────────────────────
+    all_words = get_all_words(conn)
+    all_phrases_dash = get_all_phrases(conn)
+    pending_dash = get_all_pending_sounds(conn)
+    all_clips_dash = get_clips(conn)
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("📦 Clips", len(all_clips_dash))
+    sc2.metric("📝 Words", len(all_words))
+    sc3.metric("📖 Phrases", len(all_phrases_dash))
+    sc4.metric("❓ Pending", len(set(p["name"] for p in pending_dash)))
+
+    st.divider()
+
+    # ── Record or upload ───────────────────────────────────────────
+    st.subheader("🎤 Quick Recognize")
+    dash_mode = st.radio("Input", ["Record", "Upload WAV"], horizontal=True, key="dash_mode")
+
+    dash_audio = None
+    if dash_mode == "Record":
+        dash_audio = st.audio_input("🎤 Press to record", key="dash_rec")
+    else:
+        dash_upload = st.file_uploader("Upload a WAV file", type=["wav"], key="dash_upload")
+        if dash_upload:
+            dash_audio = dash_upload
+
+    if dash_audio is not None:
+        audio_bytes = dash_audio.getvalue() if hasattr(dash_audio, "getvalue") else dash_audio.read()
+        st.audio(audio_bytes, format="audio/wav")
+
+        # Build recognizer
+        all_c = get_clips(conn)
+        clip_data_dash = []
+        for c in all_c:
+            feat = get_features(conn, c["id"])
+            if feat:
+                clip_data_dash.append({
+                    "id": c["id"], "filename": c["filename"],
+                    "label": c["label"], "vector": feat["vector"],
+                })
+
+        if len(clip_data_dash) < 2:
+            st.warning(
+                "Need at least **2 clips with features** to recognize. "
+                "Go to **Record** → **Analysis** first."
+            )
+        else:
+            from recognizer import Recognizer
+            from sequences import split_audio, extract_segment_features
+            from rule_engine import apply_rules, suggest_for_gap, arrange_sentence
+
+            recog = Recognizer()
+            recog.fit(
+                [d["vector"] for d in clip_data_dash],
+                [d["label"] for d in clip_data_dash],
+            )
+
+            # Save temp file
+            import time as _time
+            seq_dir = os.path.join(os.path.dirname(AUDIO_DIR), SEQUENCE_AUDIO_DIR_NAME)
+            os.makedirs(seq_dir, exist_ok=True)
+            tmp_path = os.path.join(seq_dir, f"dash_{int(_time.time()*1000)}.wav")
+            with open(tmp_path, "wb") as f:
+                f.write(audio_bytes)
+
+            # Try single-word recognition first
+            try:
+                from features import extract_features
+                vector, raw = extract_features(tmp_path)
+                single_result = recog.recognize(vector)
+            except Exception:
+                single_result = None
+
+            # Also try multi-word split
+            try:
+                segments = split_audio(tmp_path, top_db=SPLIT_TOP_DB_DEFAULT)
+            except Exception:
+                segments = []
+
+            # Build word lookup
+            word_lookup_dash: dict = {}
+            for w in all_words:
+                word_lookup_dash[w["canonical"]] = w
+                for v in get_variants(conn, w["id"]):
+                    word_lookup_dash[v] = w
+
+            st.divider()
+
+            # ── Single word result ─────────────────────────────────
+            if single_result and not single_result["is_unknown"]:
+                st.subheader("🔤 Single Word Recognition")
+                word_info = word_lookup_dash.get(single_result["label"])
+                rc1, rc2, rc3 = st.columns(3)
+                with rc1:
+                    st.metric("Recognized", single_result["label"])
+                with rc2:
+                    if word_info:
+                        st.metric("Meaning", word_info.get("meaning") or "?")
+                    else:
+                        st.metric("Meaning", "?")
+                with rc3:
+                    st.metric("Distance", f"{single_result['distance']:.2f}")
+
+                if word_info:
+                    conf_val, conf_total = word_confidence(word_info)
+                    status = word_info.get("status", "unverified")
+                    if status == "unverified":
+                        st.warning("⚠️ **Unverified hypothesis** — treat with caution.")
+                    if conf_total < LOW_EVIDENCE_THRESHOLD:
+                        st.info(f"ℹ️ Low evidence — only {conf_total} test(s).")
+                    else:
+                        st.write(f"Confidence: **{conf_val:.0%}** ({conf_total} tests)")
+
+                    # Right / Wrong
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        if st.button("👍 Right", key="dash_right", type="primary"):
+                            confirm_word(conn, word_info["id"])
+                            st.success("✅ Confirmed!")
+                            st.rerun()
+                    with bc2:
+                        if st.button("👎 Wrong", key="dash_wrong"):
+                            st.session_state["dash_correction"] = True
+
+                    if st.session_state.get("dash_correction"):
+                        corr = st.text_input("Correct meaning?", key="dash_corr_input")
+                        if st.button("Submit", key="dash_corr_submit"):
+                            reject_word(conn, word_info["id"], correction=corr)
+                            st.session_state["dash_correction"] = False
+                            st.warning("❌ Rejected. Logged.")
+                            st.rerun()
+
+            # ── Multi-word sequence result ─────────────────────────
+            if len(segments) >= 2:
+                from sequences import recognize_sequence, count_ngrams
+                pending_vecs = get_pending_sounds_with_vectors(conn)
+                results = recognize_sequence(segments, recog, pending_vecs)
+                labels = [r["label"] for r in results]
+
+                st.subheader("🔗 Sequence Recognition")
+                st.markdown(f"### `{' '.join(labels)}`")
+
+                # Word-by-word table
+                rows_dash = []
+                word_meanings_dash = []
+                for r in results:
+                    lbl = r["label"]
+                    info = word_lookup_dash.get(lbl)
+                    meaning = info["meaning"] if info else None
+                    word_meanings_dash.append(meaning)
+                    rows_dash.append({
+                        "Word": lbl,
+                        "Meaning": meaning or "?",
+                        "Status": "❓ Unknown" if r["is_unknown"] else (
+                            "✅" if info and info.get("status") == "verified" else "❓"
+                        ),
+                    })
+                st.dataframe(pd.DataFrame(rows_dash), use_container_width=True, hide_index=True)
+
+                # Phrase lookup
+                phrase_text = " ".join(labels)
+                saved_phrase = get_phrase_by_text(conn, phrase_text)
+                if saved_phrase:
+                    st.success(f"**Phrase meaning:** *{saved_phrase['meaning'] or '?'}*")
+                else:
+                    st.warning("🆕 New sentence — not yet saved.")
+                    all_rules = get_all_rules(conn)
+                    arranged = arrange_sentence(labels, word_lookup_dash, all_rules)
+                    if arranged["ranked_suggestions"]:
+                        st.write("**Suggestions (tentative):**")
+                        for s in arranged["ranked_suggestions"][:3]:
+                            st.write(f"  → *{s['suggestion']}* — {s['reason']}")
+
+            elif single_result and single_result["is_unknown"]:
+                st.subheader("❓ Unknown Sound")
+                st.info(
+                    f"This sound was not recognized (distance: {single_result['distance']:.2f}). "
+                    f"It would be saved as a **pending sound** for future naming."
+                )
+
+    # ── Pending sounds list ────────────────────────────────────────
+    if pending_dash:
+        st.divider()
+        st.subheader("❓ Pending Unknown Sounds")
+        groups = {}
+        for p in pending_dash:
+            groups.setdefault(p["name"], []).append(p)
+        for name, items in list(groups.items())[:10]:
+            st.caption(f"🔵 **{name}** — {len(items)} clip(s)")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  PAGE: Record
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-if page == "🎙️ Record":
+elif page == "🎙️ Record":
     st.title("🎙️ Record a Clip")
     st.caption(
         "Record a word or phrase. Every meaning is a *hypothesis* until verified."
@@ -1227,3 +1432,192 @@ elif page == "📋 Summary":
             )
     else:
         st.info("No history yet.")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: Evaluation
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+elif page == "📈 Evaluation":
+    import matplotlib.pyplot as plt
+
+    st.title("📈 Model Evaluation & Performance")
+    st.caption(
+        "Speaker-wise holdout evaluation, classifier comparison, noise robustness, "
+        "and honest reporting on model limitations."
+    )
+
+    col_btn, col_exp = st.columns([1, 1])
+    with col_btn:
+        run_eval = st.button("🚀 Run Evaluation", type="primary")
+
+    if run_eval or "eval_result" in st.session_state:
+        if run_eval or "eval_result" not in st.session_state:
+            with st.spinner("Running evaluation across classifiers and noise levels..."):
+                st.session_state.eval_result = run_evaluation(conn)
+
+        res = st.session_state.eval_result
+
+        # ── Warnings ───────────────────────────────────────────────
+        if res.get("warnings"):
+            for w in res["warnings"]:
+                st.warning(f"⚠️ {w}")
+
+        # ── Dataset Overview ───────────────────────────────────────
+        st.subheader("📊 Dataset Overview")
+        ds = res.get("dataset", {})
+        vocab = res.get("vocabulary", {})
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Clips", ds.get("n_clips", 0))
+        c2.metric("Labels", ds.get("n_labels", 0))
+        c3.metric("Speakers", ds.get("n_speakers", 0))
+        c4.metric("Words (Vocab)", vocab.get("n_words", 0))
+        c5.metric("Phrases", vocab.get("n_phrases", 0))
+        c6.metric("Pending Sounds", vocab.get("n_pending", 0))
+
+        if "split_method" in res:
+            sizes = res.get("split_sizes", {})
+            st.info(
+                f"**Split Strategy:** {res['split_method']} "
+                f"(Train: {sizes.get('train', '?')} clips, Test: {sizes.get('test', '?')} clips)"
+            )
+
+        # ── Classifier Comparison ──────────────────────────────────
+        st.divider()
+        st.subheader("🤖 Classifier Comparison")
+        st.caption("Comparing pure-numpy classifiers on identical extracted features.")
+
+        classifiers = res.get("classifiers", {})
+        if classifiers:
+            clf_rows = []
+            best_clf_name = None
+            best_acc = -1.0
+            for name, metrics in classifiers.items():
+                if "error" in metrics:
+                    clf_rows.append({"Classifier": name, "Accuracy": f"Error: {metrics['error']}", "Status": "Failed"})
+                else:
+                    acc = metrics.get("accuracy", 0.0)
+                    if acc > best_acc:
+                        best_acc = acc
+                        best_clf_name = name
+                    clf_rows.append({
+                        "Classifier": name,
+                        "Accuracy": f"{acc:.1%}",
+                        "Test Samples": metrics.get("n_total", 0),
+                        "Classes": len(metrics.get("labels", [])),
+                    })
+            st.dataframe(pd.DataFrame(clf_rows), use_container_width=True, hide_index=True)
+
+            # Per-class metrics & Confusion Matrix for best / primary classifier
+            target_clf = best_clf_name or (list(classifiers.keys())[0] if classifiers else None)
+            if target_clf and "error" not in classifiers[target_clf]:
+                t_metrics = classifiers[target_clf]
+                st.markdown(f"#### Detailed Performance: **{target_clf}**")
+
+                col_pc, col_cm = st.columns([1, 1])
+                with col_pc:
+                    st.markdown("**Per-Class Precision & Recall**")
+                    pc_dict = t_metrics.get("per_class", {})
+                    if pc_dict:
+                        pc_rows = []
+                        for lbl, stats in pc_dict.items():
+                            pc_rows.append({
+                                "Label": lbl,
+                                "Precision": f"{stats['precision']:.1%}",
+                                "Recall": f"{stats['recall']:.1%}",
+                                "Support": stats["support"],
+                            })
+                        st.dataframe(pd.DataFrame(pc_rows), use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("No per-class breakdown available.")
+
+                with col_cm:
+                    st.markdown("**Confusion Matrix Heatmap**")
+                    cm = np.array(t_metrics.get("confusion_matrix", []))
+                    labels = t_metrics.get("labels", [])
+                    if cm.size > 0 and len(labels) > 0:
+                        fig, ax = plt.subplots(figsize=(5, 4))
+                        im = ax.imshow(cm, cmap="Blues", interpolation="nearest")
+                        ax.set_xticks(range(len(labels)))
+                        ax.set_yticks(range(len(labels)))
+                        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+                        ax.set_yticklabels(labels, fontsize=9)
+                        ax.set_xlabel("Predicted", fontsize=10)
+                        ax.set_ylabel("True", fontsize=10)
+                        max_val = cm.max() if cm.max() > 0 else 1
+                        for i in range(len(labels)):
+                            for j in range(len(labels)):
+                                ax.text(
+                                    j, i, str(cm[i, j]),
+                                    ha="center", va="center",
+                                    color="white" if cm[i, j] > max_val / 2 else "black",
+                                    fontsize=9,
+                                )
+                        fig.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                    else:
+                        st.caption("No confusion matrix data.")
+
+        # ── Cross-Speaker Accuracy ─────────────────────────────────
+        if res.get("cross_speaker"):
+            st.divider()
+            st.subheader("👥 Cross-Speaker Generalisation")
+            st.caption("Training on all other speakers and testing exclusively on the held-out speaker.")
+            cs_rows = []
+            for spk, info in res["cross_speaker"].items():
+                acc = info.get("accuracy")
+                cs_rows.append({
+                    "Held-Out Speaker": spk,
+                    "Accuracy": f"{acc:.1%}" if acc is not None else "N/A",
+                    "Test Samples": info.get("n_test", "—"),
+                    "Note": info.get("note", "OK"),
+                })
+            st.dataframe(pd.DataFrame(cs_rows), use_container_width=True, hide_index=True)
+
+        # ── Noise Robustness ───────────────────────────────────────
+        if res.get("noise_robustness"):
+            st.divider()
+            st.subheader("🔊 Noise Robustness (Synthetic SNR Degradation)")
+            st.caption("Model trained on clean signals, tested against feature vectors with synthetic noise.")
+            nr_data = res["noise_robustness"]
+            nr_df = pd.DataFrame([
+                {"SNR Level": k, "Accuracy": v} for k, v in nr_data.items()
+            ])
+            st.bar_chart(nr_df.set_index("SNR Level"))
+
+        # ── User Confirmation Stats ────────────────────────────────
+        if res.get("confirmation"):
+            st.divider()
+            st.subheader("👍 User Feedback & Confirmations")
+            conf = res["confirmation"]
+            f1, f2, f3, f4 = st.columns(4)
+            f1.metric("Total Tests", conf.get("total_tests", 0))
+            f2.metric("Confirmed (Right)", conf.get("total_right", 0))
+            f3.metric("Rejected (Wrong)", conf.get("total_wrong", 0))
+            f4.metric("Agreement Share", f"{conf.get('right_share', 0.0):.1%}")
+
+        # ── Export Report & Limitations ────────────────────────────
+        st.divider()
+        st.subheader("📄 Evaluation Report & Limitations")
+
+        report_md = generate_report(res)
+
+        col_exp_btn, col_dl_btn = st.columns([1, 1])
+        with col_exp_btn:
+            if st.button("📥 Save Report to Disk"):
+                saved_path = export_report(conn)
+                st.success(f"Report saved to `{saved_path}`")
+
+        with col_dl_btn:
+            st.download_button(
+                label="⬇️ Download Report (.md)",
+                data=report_md,
+                file_name=f"ucs_evaluation_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown",
+            )
+
+        with st.expander("📖 View Limitations Section (auto-included in all reports)", expanded=True):
+            st.markdown(LIMITATIONS_TEXT)
+    else:
+        st.info("Click **Run Evaluation** above to compute metrics, compare classifiers, and inspect noise robustness.")
+
