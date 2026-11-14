@@ -264,7 +264,13 @@ def save_word(
         (canonical, meaning, word_type, person_number, status, _utcnow()),
     )
     conn.commit()
-    return cur.lastrowid
+    wid = cur.lastrowid
+    log_history(
+        conn, "words", wid,
+        json.dumps({"_action": "create"}),
+        json.dumps({"canonical": canonical, "meaning": meaning, "status": status}),
+    )
+    return wid
 
 
 def get_word_by_id(conn: sqlite3.Connection, word_id: int) -> dict | None:
@@ -486,18 +492,29 @@ def undo_last_change(conn: sqlite3.Connection) -> str | None:
     row_id = entry["row_id"]
     old = json.loads(entry["old_value"]) if entry["old_value"] else {}
 
-    # Apply the old values back
-    if old and table in ("words", "clips", "phrases", "rules"):
+    # Check if this was a creation action
+    if isinstance(old, dict) and old.get("_action") == "create":
+        if table in ("words", "clips", "phrases", "rules", "pending_sounds", "word_variants"):
+            conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+            if table == "words":
+                conn.execute("DELETE FROM word_variants WHERE word_id = ?", (row_id,))
+            conn.commit()
+        desc = f"Undid creation of {table} #{row_id}"
+    elif old and table in ("words", "clips", "phrases", "rules"):
+        # Apply the old values back
         sets = ", ".join(f"{k} = ?" for k in old)
         vals = list(old.values()) + [row_id]
         conn.execute(f"UPDATE {table} SET {sets} WHERE id = ?", vals)
         conn.commit()
+        desc = f"Reverted {table} #{row_id}: {old}"
+    else:
+        desc = f"Reverted {table} #{row_id}"
 
     # Remove this history entry so it can't be undone twice
     conn.execute("DELETE FROM history WHERE id = ?", (entry["id"],))
     conn.commit()
 
-    return f"Reverted {table} #{row_id}: {old}"
+    return desc
 
 
 def get_recent_history(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:

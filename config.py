@@ -33,8 +33,10 @@ HOP_LENGTH = 512              # hop length for STFT / MFCC
 FEATURE_VECTOR_LEN = N_MFCC * 2 + 2 + 2 + 1   # = 45
 
 # ── Recognition / Clustering (Phase 3) ────────────────────────────
-RECOGNIZE_THRESHOLD = 15.0    # Euclidean distance above which → "unknown"
+UNKNOWN_DISTANCE_THRESHOLD = 15.0  # distance above which a sound is unknown
+RECOGNIZE_THRESHOLD = UNKNOWN_DISTANCE_THRESHOLD
 PENDING_MERGE_THRESHOLD = 10.0  # distance to reuse an existing pending name
+DUPLICATE_SOUND_THRESHOLD = 8.0  # distance below which sound is close to an existing word
 KNN_NEIGHBORS = 3             # k for KNN recognizer
 TSNE_PERPLEXITY = 5           # t-SNE perplexity (low for small datasets)
 DBSCAN_EPS_DEFAULT = 5.0      # DBSCAN default eps
@@ -50,7 +52,9 @@ WORD_TYPES = ["noun", "verb", "pronoun", "question_word", "adjective", "other"]
 SPLIT_TOP_DB_DEFAULT = 25       # librosa.effects.split top_db default
 SPLIT_TOP_DB_MIN = 10
 SPLIT_TOP_DB_MAX = 60
-MIN_SEGMENT_DURATION = 0.05     # seconds — ignore segments shorter than this
+MIN_SEGMENT_LENGTH = 0.05       # seconds — minimum duration for a word segment
+MIN_SEGMENT_DURATION = MIN_SEGMENT_LENGTH
+MAX_SEGMENTS_PER_CLIP = 20      # maximum word segments processed per clip
 SEQUENCE_AUDIO_DIR_NAME = "sequence_recordings"
 
 # ── Schema version (bumped on every migration) ────────────────────

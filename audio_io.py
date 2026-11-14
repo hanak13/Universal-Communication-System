@@ -107,3 +107,17 @@ def list_recordings() -> list[str]:
     os.makedirs(AUDIO_DIR, exist_ok=True)
     return sorted(f for f in os.listdir(AUDIO_DIR) if f.endswith(".wav"))
 
+
+def audio_array_to_wav_bytes(y, sr: int = SAMPLE_RATE) -> bytes:
+    """Convert a 1D float numpy array (-1.0 to 1.0) into 16-bit PCM WAV bytes."""
+    import numpy as np
+    y_clamped = np.clip(y, -1.0, 1.0)
+    int16_pcm = (y_clamped * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(int16_pcm.tobytes())
+    return buf.getvalue()
+

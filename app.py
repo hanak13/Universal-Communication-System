@@ -5,6 +5,7 @@ clustering.py, recognizer.py.
 """
 import os
 import json
+import hashlib
 from datetime import datetime
 
 import streamlit as st
@@ -32,13 +33,15 @@ from audio_io import (
     load_wav,
     parse_filename,
     list_recordings,
+    audio_array_to_wav_bytes,
 )
 from config import (
     AUDIO_DIR, FEATURE_SR, HOP_LENGTH, N_FFT,
     MIN_CLIPS_FOR_CLUSTERING, DBSCAN_EPS_DEFAULT, DBSCAN_MIN_SAMPLES_DEFAULT,
-    RECOGNIZE_THRESHOLD, LOW_EVIDENCE_THRESHOLD, WORD_TYPES,
+    RECOGNIZE_THRESHOLD, UNKNOWN_DISTANCE_THRESHOLD, DUPLICATE_SOUND_THRESHOLD,
+    LOW_EVIDENCE_THRESHOLD, WORD_TYPES,
     SPLIT_TOP_DB_DEFAULT, SPLIT_TOP_DB_MIN, SPLIT_TOP_DB_MAX,
-    MIN_SEGMENT_DURATION, SEQUENCE_AUDIO_DIR_NAME,
+    MIN_SEGMENT_DURATION, MAX_SEGMENTS_PER_CLIP, SEQUENCE_AUDIO_DIR_NAME,
 )
 from evaluation import run_evaluation, export_report, generate_report, LIMITATIONS_TEXT
 
@@ -99,6 +102,10 @@ if page == "🏠 Dashboard":
     sc3.metric("📖 Phrases", len(all_phrases_dash))
     sc4.metric("❓ Pending", len(set(p["name"] for p in pending_dash)))
 
+    # Cold-start hint (Task 8)
+    if len(all_words) == 0:
+        st.info("💡 **Cold-start hint:** Say one word at a time to teach the system.")
+
     st.divider()
 
     # ── Record or upload ───────────────────────────────────────────
@@ -115,9 +122,31 @@ if page == "🏠 Dashboard":
 
     if dash_audio is not None:
         audio_bytes = dash_audio.getvalue() if hasattr(dash_audio, "getvalue") else dash_audio.read()
+        clip_hash = hashlib.md5(audio_bytes).hexdigest()[:12]
+
+        # Reset skipped segments when clip audio changes
+        if st.session_state.get("dash_active_clip_hash") != clip_hash:
+            st.session_state.dash_active_clip_hash = clip_hash
+            st.session_state.dash_skipped_indices = set()
+
+        if "dash_skipped_indices" not in st.session_state:
+            st.session_state.dash_skipped_indices = set()
+
         st.audio(audio_bytes, format="audio/wav")
 
-        # Build recognizer
+        from recognizer import Recognizer
+        from sequences import split_audio, extract_segment_features
+        import librosa
+
+        # Save temp file
+        seq_dir = os.path.join(os.path.dirname(AUDIO_DIR), SEQUENCE_AUDIO_DIR_NAME)
+        os.makedirs(seq_dir, exist_ok=True)
+        tmp_path = os.path.join(seq_dir, f"dash_{clip_hash}.wav")
+        if not os.path.exists(tmp_path):
+            with open(tmp_path, "wb") as f:
+                f.write(audio_bytes)
+
+        # Build recognizer from known clips
         all_c = get_clips(conn)
         clip_data_dash = []
         for c in all_c:
@@ -128,144 +157,312 @@ if page == "🏠 Dashboard":
                     "label": c["label"], "vector": feat["vector"],
                 })
 
-        if len(clip_data_dash) < 2:
-            st.warning(
-                "Need at least **2 clips with features** to recognize. "
-                "Go to **Record** → **Analysis** first."
-            )
-        else:
-            from recognizer import Recognizer
-            from sequences import split_audio, extract_segment_features
-            from rule_engine import apply_rules, suggest_for_gap, arrange_sentence
-
-            recog = Recognizer()
+        recog = Recognizer()
+        if len(clip_data_dash) >= 1:
             recog.fit(
                 [d["vector"] for d in clip_data_dash],
                 [d["label"] for d in clip_data_dash],
             )
 
-            # Save temp file
-            import time as _time
-            seq_dir = os.path.join(os.path.dirname(AUDIO_DIR), SEQUENCE_AUDIO_DIR_NAME)
-            os.makedirs(seq_dir, exist_ok=True)
-            tmp_path = os.path.join(seq_dir, f"dash_{int(_time.time()*1000)}.wav")
-            with open(tmp_path, "wb") as f:
-                f.write(audio_bytes)
+        # Build word lookup (canonical and variants)
+        word_lookup_dash: dict[str, dict] = {}
+        for w in all_words:
+            word_lookup_dash[w["canonical"]] = w
+            for v in get_variants(conn, w["id"]):
+                word_lookup_dash[v] = w
 
-            # Try single-word recognition first
-            try:
-                from features import extract_features
-                vector, raw = extract_features(tmp_path)
-                single_result = recog.recognize(vector)
-            except Exception:
-                single_result = None
+        # Split into word segments
+        try:
+            segments = split_audio(tmp_path, top_db=SPLIT_TOP_DB_DEFAULT)
+        except Exception:
+            segments = []
 
-            # Also try multi-word split
-            try:
-                segments = split_audio(tmp_path, top_db=SPLIT_TOP_DB_DEFAULT)
-            except Exception:
-                segments = []
+        if not segments:
+            y, sr = librosa.load(tmp_path, sr=FEATURE_SR, mono=True)
+            if len(y) > 0:
+                segments = [{
+                    "start_sample": 0, "end_sample": len(y),
+                    "start_sec": 0.0, "end_sec": float(len(y) / sr),
+                    "y": y,
+                }]
 
-            # Build word lookup
-            word_lookup_dash: dict = {}
-            for w in all_words:
-                word_lookup_dash[w["canonical"]] = w
-                for v in get_variants(conn, w["id"]):
-                    word_lookup_dash[v] = w
+        segments = segments[:MAX_SEGMENTS_PER_CLIP]
 
+        if not segments:
+            st.warning("No audio detected in the clip.")
+        else:
+            # Analyze each segment left to right
+            segment_info = []
+            first_unresolved_idx = None
+
+            for idx, seg in enumerate(segments):
+                vec, raw = extract_segment_features(seg["y"])
+                rec = recog.recognize(vec, threshold=UNKNOWN_DISTANCE_THRESHOLD)
+                matched_word = word_lookup_dash.get(rec["label"]) if not rec["is_unknown"] else None
+                is_known = matched_word is not None
+                is_skipped = idx in st.session_state.dash_skipped_indices
+                seg_wav = audio_array_to_wav_bytes(seg["y"], sr=FEATURE_SR)
+
+                info = {
+                    "idx": idx,
+                    "seg": seg,
+                    "vec": vec,
+                    "raw": raw,
+                    "rec": rec,
+                    "matched_word": matched_word,
+                    "is_known": is_known,
+                    "is_skipped": is_skipped,
+                    "wav_bytes": seg_wav,
+                }
+                segment_info.append(info)
+
+                if not is_known and not is_skipped and first_unresolved_idx is None:
+                    first_unresolved_idx = idx
+
+            # Show segments in order up to first_unresolved_idx (or all if all resolved)
             st.divider()
+            st.subheader("🧩 Word Segments")
+            st.caption("Segments decoded left to right. Meanings are hypotheses.")
 
-            # ── Single word result ─────────────────────────────────
-            if single_result and not single_result["is_unknown"]:
-                st.subheader("🔤 Single Word Recognition")
-                word_info = word_lookup_dash.get(single_result["label"])
-                rc1, rc2, rc3 = st.columns(3)
-                with rc1:
-                    st.metric("Recognized", single_result["label"])
-                with rc2:
-                    if word_info:
-                        st.metric("Meaning", word_info.get("meaning") or "?")
+            max_show_idx = first_unresolved_idx if first_unresolved_idx is not None else len(segment_info) - 1
+
+            for i in range(max_show_idx + 1):
+                info = segment_info[i]
+                c_idx, c_aud, c_wd, c_mn, c_cf = st.columns([1, 3, 2, 3, 2])
+                with c_idx:
+                    st.markdown(f"**#{i + 1}**")
+                with c_aud:
+                    st.audio(info["wav_bytes"], format="audio/wav")
+                with c_wd:
+                    if info["is_known"]:
+                        st.markdown(f"**`{info['matched_word']['canonical']}`**")
+                    elif info["is_skipped"]:
+                        st.markdown(f"*Skipped* (`{info['rec'].get('label', 'unknown')}`)")
                     else:
-                        st.metric("Meaning", "?")
-                with rc3:
-                    st.metric("Distance", f"{single_result['distance']:.2f}")
-
-                if word_info:
-                    conf_val, conf_total = word_confidence(word_info)
-                    status = word_info.get("status", "unverified")
-                    if status == "unverified":
-                        st.warning("⚠️ **Unverified hypothesis** — treat with caution.")
-                    if conf_total < LOW_EVIDENCE_THRESHOLD:
-                        st.info(f"ℹ️ Low evidence — only {conf_total} test(s).")
+                        st.markdown("❓ **Unknown**")
+                with c_mn:
+                    if info["is_known"]:
+                        st.write(f"*{info['matched_word'].get('meaning') or '?'}*")
+                    elif info["is_skipped"]:
+                        st.caption("Pending")
                     else:
-                        st.write(f"Confidence: **{conf_val:.0%}** ({conf_total} tests)")
+                        st.caption("Needs meaning")
+                with c_cf:
+                    if info["is_known"]:
+                        conf_val, conf_tot = word_confidence(info["matched_word"])
+                        status = info["matched_word"].get("status", "unverified")
+                        badge = "⚠️ Unverified" if status == "unverified" else "✅ Verified"
+                        if conf_tot < LOW_EVIDENCE_THRESHOLD:
+                            st.caption(f"{badge} (low evidence)")
+                        else:
+                            st.caption(f"{badge} ({conf_val:.0%})")
+                    else:
+                        st.caption("—")
 
-                    # Right / Wrong
-                    bc1, bc2 = st.columns(2)
-                    with bc1:
-                        if st.button("👍 Right", key="dash_right", type="primary"):
-                            confirm_word(conn, word_info["id"])
-                            st.success("✅ Confirmed!")
+            # Inline form directly under the first unresolved segment
+            if first_unresolved_idx is not None:
+                target_info = segment_info[first_unresolved_idx]
+                st.markdown("---")
+                st.subheader(f"✏️ Teach Meaning for Segment #{first_unresolved_idx + 1}")
+
+                # Check duplicate candidate (Task 9)
+                close_cand = None
+                close_dist = None
+                if target_info["rec"]["top3"]:
+                    top_lbl, top_dst = target_info["rec"]["top3"][0]
+                    if top_dst <= DUPLICATE_SOUND_THRESHOLD:
+                        close_cand = top_lbl
+                        close_dist = top_dst
+
+                if close_cand:
+                    st.info(f"💡 This sounds like **'{close_cand}'** (distance: {close_dist:.1f}). Same word?")
+
+                with st.container():
+                    f_col1, f_col2 = st.columns(2)
+                    with f_col1:
+                        spelling_in = st.text_input(
+                            "Spelling",
+                            key=f"inline_spell_{first_unresolved_idx}",
+                            placeholder="e.g. inu",
+                        ).strip().lower()
+                    with f_col2:
+                        meaning_in = st.text_input(
+                            "English meaning (hypothesis)",
+                            key=f"inline_mean_{first_unresolved_idx}",
+                            placeholder="e.g. you",
+                        ).strip()
+
+                    f_col3, f_col4 = st.columns(2)
+                    with f_col3:
+                        type_in = st.selectbox(
+                            "Word type",
+                            WORD_TYPES,
+                            key=f"inline_type_{first_unresolved_idx}",
+                        )
+                    with f_col4:
+                        pn_in = st.text_input(
+                            "Person / Number (optional)",
+                            key=f"inline_pn_{first_unresolved_idx}",
+                            placeholder="e.g. 2s",
+                        ).strip()
+
+                    b1, b2, b3, b4 = st.columns([2, 2, 2, 3])
+                    with b1:
+                        if st.button("💾 Save word", key=f"btn_save_{first_unresolved_idx}", type="primary"):
+                            if not spelling_in:
+                                st.error("Please provide a spelling for this word.")
+                            else:
+                                canon = spelling_in.replace(" ", "_")
+                                # Save or update word
+                                existing_w = lookup_by_variant(conn, canon)
+                                if existing_w is None:
+                                    save_word(
+                                        conn,
+                                        canonical=canon,
+                                        meaning=meaning_in or None,
+                                        word_type=type_in,
+                                        person_number=pn_in or None,
+                                        status="unverified",
+                                    )
+                                else:
+                                    if meaning_in and not existing_w.get("meaning"):
+                                        update_word(conn, existing_w["id"], meaning=meaning_in)
+
+                                # Save segment audio as clip
+                                speaker = "speaker1"
+                                filename = build_filename(canon, speaker)
+                                save_wav_from_file(target_info["wav_bytes"], filename)
+                                clip_id = save_clip(conn, filename=filename, label=canon, speaker=speaker)
+                                save_features(conn, clip_id, target_info["vec"], target_info["raw"]["duration"])
+
+                                # Link pending sound if matched
+                                if target_info["rec"].get("pending_name"):
+                                    delete_pending_by_name(conn, target_info["rec"]["pending_name"])
+
+                                st.success(f"✅ Saved word **{canon}** (hypothesis: *{meaning_in or '?'}*)!")
+                                st.rerun()
+
+                    with b2:
+                        if st.button("⏭️ Skip for now", key=f"btn_skip_{first_unresolved_idx}"):
+                            pend_name = next_pending_name(conn)
+                            save_pending_sound(conn, name=pend_name, vector=target_info["vec"])
+                            st.session_state.dash_skipped_indices.add(first_unresolved_idx)
+                            st.info(f"Skipped for now (saved as **{pend_name}** in Pending).")
                             st.rerun()
-                    with bc2:
-                        if st.button("👎 Wrong", key="dash_wrong"):
-                            st.session_state["dash_correction"] = True
 
-                    if st.session_state.get("dash_correction"):
-                        corr = st.text_input("Correct meaning?", key="dash_corr_input")
-                        if st.button("Submit", key="dash_corr_submit"):
-                            reject_word(conn, word_info["id"], correction=corr)
-                            st.session_state["dash_correction"] = False
-                            st.warning("❌ Rejected. Logged.")
+                    with b3:
+                        if all_words:
+                            exist_words = [w["canonical"] for w in all_words]
+                            selected_w = st.selectbox(
+                                "Known word",
+                                exist_words,
+                                key=f"sel_same_{first_unresolved_idx}",
+                                label_visibility="collapsed",
+                            )
+                        else:
+                            selected_w = None
+
+                    with b4:
+                        if selected_w and st.button("🔗 Same as existing word", key=f"btn_same_{first_unresolved_idx}"):
+                            speaker = "speaker1"
+                            filename = build_filename(selected_w, speaker)
+                            save_wav_from_file(target_info["wav_bytes"], filename)
+                            clip_id = save_clip(conn, filename=filename, label=selected_w, speaker=speaker)
+                            save_features(conn, clip_id, target_info["vec"], target_info["raw"]["duration"])
+                            st.success(f"✅ Added audio example to existing word **{selected_w}**!")
                             st.rerun()
 
-            # ── Multi-word sequence result ─────────────────────────
-            if len(segments) >= 2:
-                from sequences import recognize_sequence, count_ngrams
-                pending_vecs = get_pending_sounds_with_vectors(conn)
-                results = recognize_sequence(segments, recog, pending_vecs)
-                labels = [r["label"] for r in results]
+            else:
+                # All segments are resolved! (Task 5)
+                st.markdown("---")
+                st.subheader("🎉 Sequence Recognition Complete")
 
-                st.subheader("🔗 Sequence Recognition")
-                st.markdown(f"### `{' '.join(labels)}`")
+                resolved_labels = []
+                word_meanings = []
+                for info in segment_info:
+                    if info["is_known"]:
+                        canon = info["matched_word"]["canonical"]
+                        resolved_labels.append(canon)
+                        word_meanings.append(info["matched_word"].get("meaning") or "?")
+                    else:
+                        lbl = info["rec"].get("label", "new_word")
+                        resolved_labels.append(lbl)
+                        word_meanings.append("[?]")
 
-                # Word-by-word table
-                rows_dash = []
-                word_meanings_dash = []
-                for r in results:
-                    lbl = r["label"]
-                    info = word_lookup_dash.get(lbl)
-                    meaning = info["meaning"] if info else None
-                    word_meanings_dash.append(meaning)
-                    rows_dash.append({
-                        "Word": lbl,
-                        "Meaning": meaning or "?",
-                        "Status": "❓ Unknown" if r["is_unknown"] else (
-                            "✅" if info and info.get("status") == "verified" else "❓"
-                        ),
-                    })
-                st.dataframe(pd.DataFrame(rows_dash), use_container_width=True, hide_index=True)
+                full_text = " ".join(resolved_labels)
+                st.markdown(f"### 🗣️ Recognized: `{full_text}`")
 
-                # Phrase lookup
-                phrase_text = " ".join(labels)
-                saved_phrase = get_phrase_by_text(conn, phrase_text)
+                joined_meanings = " ".join(word_meanings)
+                st.markdown(f"**Word-by-word English hypothesis:** *{joined_meanings}*")
+
+                saved_phrase = get_phrase_by_text(conn, full_text)
                 if saved_phrase:
-                    st.success(f"**Phrase meaning:** *{saved_phrase['meaning'] or '?'}*")
+                    st.success(f"📖 **Phrase hypothesis:** *{saved_phrase.get('meaning') or '?'}*")
                 else:
-                    st.warning("🆕 New sentence — not yet saved.")
+                    st.warning("🆕 **New sentence found** — no phrase meaning saved yet.")
+                    from rule_engine import arrange_sentence
                     all_rules = get_all_rules(conn)
-                    arranged = arrange_sentence(labels, word_lookup_dash, all_rules)
-                    if arranged["ranked_suggestions"]:
-                        st.write("**Suggestions (tentative):**")
-                        for s in arranged["ranked_suggestions"][:3]:
-                            st.write(f"  → *{s['suggestion']}* — {s['reason']}")
+                    arranged = arrange_sentence(resolved_labels, word_lookup_dash, all_rules)
+                    if arranged.get("ranked_suggestions"):
+                        st.markdown("**Rule-based suggestions (tentative):**")
+                        for sug in arranged["ranked_suggestions"][:3]:
+                            st.write(f"  → *{sug['suggestion']}* — {sug['reason']}")
 
-            elif single_result and single_result["is_unknown"]:
-                st.subheader("❓ Unknown Sound")
-                st.info(
-                    f"This sound was not recognized (distance: {single_result['distance']:.2f}). "
-                    f"It would be saved as a **pending sound** for future naming."
-                )
+                # Sentence Right / Wrong buttons
+                st.markdown("#### Sentence Feedback")
+                col_r, col_w = st.columns(2)
+                with col_r:
+                    if st.button("👍 Right", key="dash_sent_right_btn", type="primary"):
+                        if saved_phrase:
+                            update_phrase(conn, saved_phrase["id"], status="verified")
+                        else:
+                            best_meaning = joined_meanings
+                            from rule_engine import arrange_sentence
+                            all_rules = get_all_rules(conn)
+                            arr = arrange_sentence(resolved_labels, word_lookup_dash, all_rules)
+                            if arr.get("ranked_suggestions"):
+                                best_meaning = arr["ranked_suggestions"][0]["suggestion"]
+                            save_phrase(conn, text=full_text, meaning=best_meaning, status="verified")
+                        st.success("✅ Phrase confirmed and verified!")
+                        st.rerun()
+
+                with col_w:
+                    if st.button("👎 Wrong", key="dash_sent_wrong_btn"):
+                        st.session_state["dash_phrase_wrong"] = True
+
+                if st.session_state.get("dash_phrase_wrong"):
+                    corr_phrase = st.text_input("Correct phrase meaning?", key="dash_phrase_corr_inp")
+                    if st.button("Submit Phrase Correction", key="dash_phrase_corr_submit"):
+                        if saved_phrase:
+                            update_phrase(conn, saved_phrase["id"], meaning=corr_phrase, status="verified")
+                        else:
+                            save_phrase(conn, text=full_text, meaning=corr_phrase, status="verified")
+                        st.session_state["dash_phrase_wrong"] = False
+                        st.success("Saved phrase correction!")
+                        st.rerun()
+
+                # Whole-clip meaning input (Task 6)
+                st.divider()
+                st.markdown("#### 💡 Save Whole-Clip Meaning")
+                c_wc_inp, c_wc_btn = st.columns([3, 1])
+                with c_wc_inp:
+                    whole_meaning = st.text_input(
+                        "Whole-clip meaning (English)",
+                        placeholder="e.g. How are you?",
+                        key="dash_whole_meaning_inp",
+                    ).strip()
+                with c_wc_btn:
+                    st.write("")
+                    if st.button("Save as phrase", key="dash_save_as_phrase_btn"):
+                        if whole_meaning:
+                            if saved_phrase:
+                                update_phrase(conn, saved_phrase["id"], meaning=whole_meaning, status="verified")
+                            else:
+                                save_phrase(conn, text=full_text, meaning=whole_meaning, status="verified")
+                            st.success(f"✅ Saved phrase: **{full_text}** = *{whole_meaning}*")
+                            st.rerun()
+                        else:
+                            st.error("Please enter a meaning first.")
 
     # ── Pending sounds list ────────────────────────────────────────
     if pending_dash:

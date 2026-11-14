@@ -26,7 +26,7 @@ class Recognizer:
         self._fitted = False
 
     def fit(self, vectors: list[list[float]], labels: list[str]) -> None:
-        if len(vectors) < 2 or len(set(labels)) < 1:
+        if len(vectors) < 1 or len(set(labels)) < 1:
             self._fitted = False
             return
 
