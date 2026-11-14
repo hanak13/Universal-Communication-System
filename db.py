@@ -87,12 +87,50 @@ def _set_version(conn: sqlite3.Connection, ver: int) -> None:
     conn.execute("DELETE FROM schema_version;")
     conn.execute("INSERT INTO schema_version (version) VALUES (?);", (ver,))
 
+_MIGRATION_V2 = """
+CREATE TABLE IF NOT EXISTS features (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    clip_id    INTEGER NOT NULL UNIQUE REFERENCES clips(id) ON DELETE CASCADE,
+    vector     TEXT    NOT NULL,
+    duration   REAL    NOT NULL,
+    created_at TEXT    NOT NULL
+);
+"""
+
+def save_features(conn: sqlite3.Connection, clip_id: int, vector: list[float], duration: float) -> int:
+    vec_json = json.dumps(vector)
+    cur = conn.execute(
+        "INSERT OR REPLACE INTO features (clip_id, vector, duration, created_at) VALUES (?, ?, ?, ?)",
+        (clip_id, vec_json, duration, _utcnow()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+def get_features(conn: sqlite3.Connection, clip_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM features WHERE clip_id = ?", (clip_id,)).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "clip_id": row["clip_id"],
+        "vector": json.loads(row["vector"]),
+        "duration": row["duration"],
+        "created_at": row["created_at"],
+    }
+
+def clips_without_features(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT c.* FROM clips c LEFT JOIN features f ON c.id = f.clip_id WHERE f.id IS NULL ORDER BY c.id"
+    ).fetchall()
+
 def init_db(db_path: str | None = None) -> sqlite3.Connection:
     conn = get_connection(db_path)
     cur_ver = _current_version(conn)
     if cur_ver < 1:
         conn.executescript(_TABLES_V1)
-        _set_version(conn, 1)
+        conn.executescript(_MIGRATION_V2)
+        _safe_alter(conn, "ALTER TABLE pending_sounds ADD COLUMN clip_id INTEGER REFERENCES clips(id);\nALTER TABLE pending_sounds ADD COLUMN vector TEXT;")
+        _set_version(conn, 3)
         conn.commit()
     return conn
 
@@ -129,3 +167,43 @@ def distinct_labels(conn: sqlite3.Connection) -> list[str]:
 def distinct_speakers(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute("SELECT DISTINCT speaker FROM clips ORDER BY speaker").fetchall()
     return [r["speaker"] for r in rows]
+
+def _safe_alter(conn: sqlite3.Connection, sql: str) -> None:
+    for line in sql.strip().splitlines():
+        line = line.strip()
+        if not line: continue
+        try:
+            conn.execute(line)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower(): raise
+
+def save_pending_sound(conn: sqlite3.Connection, name: str, clip_id: int | None = None, vector: list[float] | None = None) -> int:
+    vec_json = json.dumps(vector) if vector is not None else None
+    cur = conn.execute(
+        "INSERT INTO pending_sounds (name, clip_id, vector, created_at) VALUES (?, ?, ?, ?)",
+        (name, clip_id, vec_json, _utcnow()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+def get_all_pending_sounds(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM pending_sounds ORDER BY id").fetchall()
+    res = []
+    for r in rows:
+        d = dict(r)
+        if d.get("vector"): d["vector"] = json.loads(d["vector"])
+        res.append(d)
+    return res
+
+def get_pending_sounds_with_vectors(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute("SELECT * FROM pending_sounds WHERE vector IS NOT NULL ORDER BY id").fetchall()
+    res = []
+    for r in rows:
+        d = dict(r)
+        d["vector"] = json.loads(d["vector"])
+        res.append(d)
+    return res
+
+def delete_pending_by_name(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute("DELETE FROM pending_sounds WHERE name = ?", (name,))
+    conn.commit()
