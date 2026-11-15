@@ -153,6 +153,18 @@ CREATE TABLE IF NOT EXISTS sequences (
 );
 """
 
+_MIGRATION_V6 = """
+CREATE TABLE IF NOT EXISTS transcription_log (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    segment_index INTEGER NOT NULL,
+    heard_guess   TEXT,
+    user_edit     TEXT,
+    final_spelling TEXT,
+    clip_hash     TEXT,
+    created_at    TEXT NOT NULL
+);
+"""
+
 
 def _safe_alter(conn: sqlite3.Connection, sql: str) -> None:
     """Run ALTER TABLE statements one by one, ignoring 'duplicate column'."""
@@ -195,6 +207,10 @@ def init_db(db_path: str | None = None) -> sqlite3.Connection:
         # V5: sequences table
         if cur_ver < 5:
             conn.executescript(_MIGRATION_V5)
+
+        # V6: transcription_log table
+        if cur_ver < 6:
+            conn.executescript(_MIGRATION_V6)
 
         _set_version(conn, SCHEMA_VERSION)
         conn.commit()
@@ -757,4 +773,51 @@ def get_all_sequences(conn: sqlite3.Connection) -> list[dict]:
         d["recognized"] = json.loads(d["recognized"])
         result.append(d)
     return result
+
+
+# ── CRUD: transcription_log ──────────────────────────────────────
+
+def save_transcription_log(
+    conn: sqlite3.Connection,
+    segment_index: int,
+    heard_guess: str | None,
+    user_edit: str | None,
+    final_spelling: str | None,
+    clip_hash: str | None = None,
+) -> int:
+    """Log a transcription guess and the user's edit for accuracy tracking."""
+    cur = conn.execute(
+        """
+        INSERT INTO transcription_log
+            (segment_index, heard_guess, user_edit, final_spelling, clip_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (segment_index, heard_guess, user_edit, final_spelling, clip_hash, _utcnow()),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_transcription_log(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    """Return recent transcription log entries."""
+    rows = conn.execute(
+        "SELECT * FROM transcription_log ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def transcription_accuracy(conn: sqlite3.Connection) -> dict:
+    """Compute how often the heard guess matched the final spelling."""
+    rows = conn.execute(
+        "SELECT heard_guess, final_spelling FROM transcription_log "
+        "WHERE heard_guess IS NOT NULL AND final_spelling IS NOT NULL"
+    ).fetchall()
+    total = len(rows)
+    if total == 0:
+        return {"total": 0, "correct": 0, "accuracy": 0.0}
+    correct = sum(
+        1 for r in rows
+        if r["heard_guess"].strip().lower() == r["final_spelling"].strip().lower()
+    )
+    return {"total": total, "correct": correct, "accuracy": correct / total}
 

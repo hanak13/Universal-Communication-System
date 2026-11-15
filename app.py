@@ -26,6 +26,7 @@ from db import (
     save_rule, get_all_rules, get_rules_by_type, get_rule_by_id,
     update_rule, delete_rule,
     save_sequence, get_all_sequences,
+    save_transcription_log,
 )
 from audio_io import (
     build_filename,
@@ -136,6 +137,7 @@ if page == "🏠 Dashboard":
 
         from recognizer import Recognizer
         from sequences import split_audio, extract_segment_features
+        from transcribe import transcribe_file, transcribe_segment, is_available as whisper_ok
         import librosa
 
         # Save temp file
@@ -145,6 +147,25 @@ if page == "🏠 Dashboard":
         if not os.path.exists(tmp_path):
             with open(tmp_path, "wb") as f:
                 f.write(audio_bytes)
+
+        # ── "You said:" whole-clip transcription ──────────────────
+        whole_transcript = None
+        _whisper_live = whisper_ok()
+        if _whisper_live:
+            try:
+                whole_transcript = transcribe_file(tmp_path)
+            except Exception:
+                whole_transcript = None
+
+        if whole_transcript:
+            st.markdown(f"#### 🗣️ You said: *\"{whole_transcript}\"*")
+        elif _whisper_live:
+            st.caption("🗣️ *(Could not transcribe audio)*")
+        else:
+            st.caption(
+                "🗣️ *Transcription unavailable — install `faster-whisper` "
+                "in the venv for automatic heard-spelling.*"
+            )
 
         # Build recognizer from known clips
         all_c = get_clips(conn)
@@ -191,7 +212,7 @@ if page == "🏠 Dashboard":
         if not segments:
             st.warning("No audio detected in the clip.")
         else:
-            # Analyze each segment left to right
+            # Analyze each segment left to right, transcribe unknowns
             segment_info = []
             first_unresolved_idx = None
 
@@ -203,6 +224,15 @@ if page == "🏠 Dashboard":
                 is_skipped = idx in st.session_state.dash_skipped_indices
                 seg_wav = audio_array_to_wav_bytes(seg["y"], sr=FEATURE_SR)
 
+                # Transcribe unknown segments per word
+                heard_guess = None
+                if not is_known and not is_skipped:
+                    if _whisper_live:
+                        try:
+                            heard_guess = transcribe_segment(seg["y"])
+                        except Exception:
+                            heard_guess = None
+
                 info = {
                     "idx": idx,
                     "seg": seg,
@@ -213,17 +243,44 @@ if page == "🏠 Dashboard":
                     "is_known": is_known,
                     "is_skipped": is_skipped,
                     "wav_bytes": seg_wav,
+                    "heard_guess": heard_guess,
                 }
                 segment_info.append(info)
 
                 if not is_known and not is_skipped and first_unresolved_idx is None:
                     first_unresolved_idx = idx
 
-            # Show segments in order up to first_unresolved_idx (or all if all resolved)
+            # ── Word chips ─────────────────────────────────────────
             st.divider()
             st.subheader("🧩 Word Segments")
-            st.caption("Segments decoded left to right. Meanings are hypotheses.")
+            st.caption("Known words vs heard guesses. Meanings are hypotheses.")
 
+            chip_parts = []
+            for info in segment_info:
+                if info["is_known"]:
+                    lbl = info["matched_word"]["canonical"]
+                    chip_parts.append(
+                        f'<span style="display:inline-block;margin:2px 4px;padding:4px 12px;'
+                        f'border-radius:16px;background:#c8e6c9;color:#1b5e20;'
+                        f'font-weight:600;">{lbl}</span>'
+                    )
+                elif info["is_skipped"]:
+                    lbl = info.get("heard_guess") or info["rec"].get("label", "?")
+                    chip_parts.append(
+                        f'<span style="display:inline-block;margin:2px 4px;padding:4px 12px;'
+                        f'border-radius:16px;background:#e0e0e0;color:#616161;'
+                        f'font-style:italic;">{lbl} (skipped)</span>'
+                    )
+                else:
+                    lbl = info.get("heard_guess") or f"new_word_{info['idx']+1}"
+                    chip_parts.append(
+                        f'<span style="display:inline-block;margin:2px 4px;padding:4px 12px;'
+                        f'border-radius:16px;background:#fff9c4;color:#f57f17;'
+                        f'font-weight:600;">{lbl} ?</span>'
+                    )
+            st.markdown("".join(chip_parts), unsafe_allow_html=True)
+
+            # ── Segment detail rows ───────────────────────────────
             max_show_idx = first_unresolved_idx if first_unresolved_idx is not None else len(segment_info) - 1
 
             for i in range(max_show_idx + 1):
@@ -237,9 +294,14 @@ if page == "🏠 Dashboard":
                     if info["is_known"]:
                         st.markdown(f"**`{info['matched_word']['canonical']}`**")
                     elif info["is_skipped"]:
-                        st.markdown(f"*Skipped* (`{info['rec'].get('label', 'unknown')}`)")
+                        guess = info.get("heard_guess") or info["rec"].get("label", "unknown")
+                        st.markdown(f"*Skipped* (`{guess}`)")
                     else:
-                        st.markdown("❓ **Unknown**")
+                        guess = info.get("heard_guess")
+                        if guess:
+                            st.markdown(f"🎧 heard: **`{guess}`**")
+                        else:
+                            st.markdown("❓ **Unknown**")
                 with c_mn:
                     if info["is_known"]:
                         st.write(f"*{info['matched_word'].get('meaning') or '?'}*")
@@ -262,10 +324,29 @@ if page == "🏠 Dashboard":
             # Inline form directly under the first unresolved segment
             if first_unresolved_idx is not None:
                 target_info = segment_info[first_unresolved_idx]
+                heard = target_info.get("heard_guess") or ""
                 st.markdown("---")
                 st.subheader(f"✏️ Teach Meaning for Segment #{first_unresolved_idx + 1}")
 
-                # Check duplicate candidate (Task 9)
+                # Show editable heard-as text box for unknown segments
+                if heard:
+                    edited_heard = st.text_input(
+                        "🎧 Heard as (edit if wrong)",
+                        value=heard,
+                        key=f"heard_edit_{first_unresolved_idx}",
+                    ).strip().lower()
+                else:
+                    edited_heard = ""
+                    if not _whisper_live:
+                        st.caption(
+                            "⚠️ Transcription engine not installed. "
+                            "Install `faster-whisper` for automatic heard-spelling."
+                        )
+
+                # Default Spelling from heard/edited text
+                default_spelling = edited_heard if edited_heard else ""
+
+                # Check duplicate candidate
                 close_cand = None
                 close_dist = None
                 if target_info["rec"]["top3"]:
@@ -282,6 +363,7 @@ if page == "🏠 Dashboard":
                     with f_col1:
                         spelling_in = st.text_input(
                             "Spelling",
+                            value=default_spelling,
                             key=f"inline_spell_{first_unresolved_idx}",
                             placeholder="e.g. inu",
                         ).strip().lower()
@@ -313,6 +395,15 @@ if page == "🏠 Dashboard":
                                 st.error("Please provide a spelling for this word.")
                             else:
                                 canon = spelling_in.replace(" ", "_")
+                                # Log transcription guess vs user edit
+                                save_transcription_log(
+                                    conn,
+                                    segment_index=first_unresolved_idx,
+                                    heard_guess=heard or None,
+                                    user_edit=edited_heard if edited_heard != heard else None,
+                                    final_spelling=canon,
+                                    clip_hash=clip_hash,
+                                )
                                 # Save or update word
                                 existing_w = lookup_by_variant(conn, canon)
                                 if existing_w is None:
@@ -347,6 +438,15 @@ if page == "🏠 Dashboard":
                             pend_name = next_pending_name(conn)
                             save_pending_sound(conn, name=pend_name, vector=target_info["vec"])
                             st.session_state.dash_skipped_indices.add(first_unresolved_idx)
+                            # Log skip
+                            save_transcription_log(
+                                conn,
+                                segment_index=first_unresolved_idx,
+                                heard_guess=heard or None,
+                                user_edit=None,
+                                final_spelling=pend_name,
+                                clip_hash=clip_hash,
+                            )
                             st.info(f"Skipped for now (saved as **{pend_name}** in Pending).")
                             st.rerun()
 
@@ -369,11 +469,20 @@ if page == "🏠 Dashboard":
                             save_wav_from_file(target_info["wav_bytes"], filename)
                             clip_id = save_clip(conn, filename=filename, label=selected_w, speaker=speaker)
                             save_features(conn, clip_id, target_info["vec"], target_info["raw"]["duration"])
+                            # Log
+                            save_transcription_log(
+                                conn,
+                                segment_index=first_unresolved_idx,
+                                heard_guess=heard or None,
+                                user_edit=None,
+                                final_spelling=selected_w,
+                                clip_hash=clip_hash,
+                            )
                             st.success(f"✅ Added audio example to existing word **{selected_w}**!")
                             st.rerun()
 
             else:
-                # All segments are resolved! (Task 5)
+                # All segments are resolved!
                 st.markdown("---")
                 st.subheader("🎉 Sequence Recognition Complete")
 
@@ -385,7 +494,7 @@ if page == "🏠 Dashboard":
                         resolved_labels.append(canon)
                         word_meanings.append(info["matched_word"].get("meaning") or "?")
                     else:
-                        lbl = info["rec"].get("label", "new_word")
+                        lbl = info.get("heard_guess") or info["rec"].get("label", "new_word")
                         resolved_labels.append(lbl)
                         word_meanings.append("[?]")
 
@@ -441,7 +550,7 @@ if page == "🏠 Dashboard":
                         st.success("Saved phrase correction!")
                         st.rerun()
 
-                # Whole-clip meaning input (Task 6)
+                # Whole-clip meaning input
                 st.divider()
                 st.markdown("#### 💡 Save Whole-Clip Meaning")
                 c_wc_inp, c_wc_btn = st.columns([3, 1])

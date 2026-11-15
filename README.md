@@ -27,10 +27,10 @@ py -3.12 -m venv .venv
 .venv\Scripts\activate.bat
 
 # 4. Install required packages:
-pip install streamlit librosa scikit-learn matplotlib numpy soundfile joblib pandas pytest
+pip install streamlit librosa scikit-learn matplotlib numpy soundfile joblib pandas pytest faster-whisper
 ```
 
-*(Note: On systems where Windows Device Guard restricts native C-extension DLLs such as scikit-learn, UCS automatically uses its built-in pure-NumPy classifiers and clustering modules without any degradation of functionality).*
+*(Note: On systems where Windows Device Guard restricts native C-extension DLLs such as scikit-learn, UCS automatically uses its built-in pure-NumPy classifiers and clustering modules without any degradation of functionality. `faster-whisper` is optional and provides automatic heard-spelling guesses; if unavailable, the app falls back gracefully to `new_word_N` placeholders).*
 
 ---
 
@@ -60,6 +60,7 @@ Universal Communication System/
 ├── sequences.py               # Long-clip splitting into word segments & decoding
 ├── rule_engine.py             # Modular plug-in engine for syntactic and semantic rules
 ├── evaluation.py              # Speaker-holdout split, multi-classifier eval, report export
+├── transcribe.py              # Speech-to-text heard-spelling guesses (faster-whisper)
 ├── rules/                     # Rule plug-ins directory (drop-in modular architecture)
 │   ├── __init__.py            # Base RulePlugin interface and registry loader
 │   ├── word_order.py          # Word-order mapping rule plug-in
@@ -75,7 +76,9 @@ Universal Communication System/
 │   ├── test_recognizer.py     # Nearest-centroid classifier & pending sounds
 │   ├── test_words.py          # Word creation, confidence, variants, and undo
 │   ├── test_sequences.py      # Sequence splitting, rules, n-grams, arrangement
-│   └── test_evaluation.py     # Classifier comparisons, noise robustness, report export
+│   ├── test_evaluation.py     # Classifier comparisons, noise robustness, report export
+│   ├── test_quick_recognize.py# Zero-data cold start, inline meaning capture & undo
+│   └── test_transcribe.py     # Heard-spelling guesses, word chips & transcription log
 └── requirements.txt           # Python dependency specification
 ```
 
@@ -165,4 +168,4 @@ Run the full test suite with:
 .venv\Scripts\python.exe -m pytest tests/ -v
 ```
 
-Expected output: 37 tests across 7 test suites passing cleanly.
+Expected output: 49 tests across 9 test suites passing cleanly.

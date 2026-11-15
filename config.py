@@ -57,6 +57,9 @@ MIN_SEGMENT_DURATION = MIN_SEGMENT_LENGTH
 MAX_SEGMENTS_PER_CLIP = 20      # maximum word segments processed per clip
 SEQUENCE_AUDIO_DIR_NAME = "sequence_recordings"
 
+# ── Transcription (Phase 8) ────────────────────────────────────────
+WHISPER_MODEL_SIZE = "base"        # faster-whisper model: "tiny", "base", "small"
+
 # ── Schema version (bumped on every migration) ────────────────────
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
