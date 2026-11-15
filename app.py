@@ -4,6 +4,7 @@ Streamlit app (UI only). Logic lives in db.py, audio_io.py, features.py,
 clustering.py, recognizer.py.
 """
 import os
+from pathlib import Path
 import json
 import hashlib
 from datetime import datetime
@@ -61,10 +62,9 @@ st.set_page_config(
 
 @st.cache_data
 def _load_ui_styles():
-    css_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "style.css")
-    if os.path.exists(css_file):
-        with open(css_file, "r", encoding="utf-8") as f:
-            return f"<style>{f.read()}</style>"
+    css_file = Path(__file__).resolve().parent / "ui" / "style.css"
+    if css_file.is_file():
+        return f"<style>{css_file.read_text(encoding='utf-8')}</style>"
     return ""
 
 st.markdown(_load_ui_styles(), unsafe_allow_html=True)

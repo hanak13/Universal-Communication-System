@@ -3,7 +3,7 @@ UCS Rule Engine — base class for rule plug-ins.
 Each rule type is a small class in rules/<type>.py.
 The engine auto-discovers them.
 """
-import os
+from pathlib import Path
 import importlib
 import inspect
 
@@ -52,16 +52,13 @@ _REGISTRY: dict[str, type[RulePlugin]] = {}
 
 def _discover_plugins():
     """Import all .py files in rules/ and register RulePlugin subclasses."""
-    rules_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules")
-    if not os.path.isdir(rules_dir):
+    rules_dir = Path(__file__).resolve().parent / "rules"
+    if not rules_dir.is_dir():
         return
 
-    for fname in sorted(os.listdir(rules_dir)):
-        if fname.startswith("_") or not fname.endswith(".py"):
-            continue
-        mod_name = f"rules.{fname[:-3]}"
+    for p in sorted(rules_dir.glob("[!_]*.py")):
         try:
-            mod = importlib.import_module(mod_name)
+            mod = importlib.import_module(f"rules.{p.stem}")
         except Exception:
             continue
         for _, obj in inspect.getmembers(mod, inspect.isclass):

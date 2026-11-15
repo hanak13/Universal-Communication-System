@@ -1,0 +1,21 @@
+# Ruff configuration for Universal Communication System (UCS)
+target-version = "py312"
+line-length = 100
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes (unused imports, undefined variables)
+    "I",   # isort
+    "UP",  # pyupgrade (modern Python 3.12 syntax)
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # line length handled by formatter
+    "B008",  # do not perform function calls in argument defaults (e.g. Streamlit defaults)
+]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*" = ["F841", "E402"]

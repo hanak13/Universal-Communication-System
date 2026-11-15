@@ -2,7 +2,7 @@
 UCS Clustering — pure-numpy KMeans, DBSCAN, PCA, t-SNE, scaler.
 No scikit-learn dependency.
 """
-import os
+from pathlib import Path
 import json
 import numpy as np
 
@@ -34,17 +34,16 @@ class SimpleScaler:
         return self.transform(X)
 
     def save(self, path: str) -> None:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as f:
-            json.dump({
-                "mean": self.mean_.tolist(),
-                "std": self.std_.tolist(),
-            }, f)
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "mean": self.mean_.tolist(),
+            "std": self.std_.tolist(),
+        }))
 
     @classmethod
     def load(cls, path: str) -> "SimpleScaler":
-        with open(path, "r") as f:
-            d = json.load(f)
+        d = json.loads(Path(path).read_text())
         s = cls()
         s.mean_ = np.array(d["mean"])
         s.std_ = np.array(d["std"])
@@ -60,9 +59,9 @@ def fit_scaler(vectors: np.ndarray) -> SimpleScaler:
 
 
 def load_scaler() -> SimpleScaler | None:
-    path = SCALER_PATH
-    if os.path.isfile(path):
-        return SimpleScaler.load(path)
+    path = Path(SCALER_PATH)
+    if path.is_file():
+        return SimpleScaler.load(str(path))
     return None
 
 

@@ -106,6 +106,19 @@ Loaded once and cached via `@st.cache_data _load_ui_styles()`:
 
 ---
 
+## 🧹 Code Architecture & Standard Libraries (Phase 10)
+
+UCS was refactored for simplicity, maintainability, and clean standard library adoption:
+- **`pathlib.Path` across all modules:** Replaced repetitive `os.path.join`, `os.path.abspath`, and manual file open/close blocks with clean object-oriented `Path` calls (`Path.write_bytes()`, `Path.read_bytes()`, `Path.glob()`).
+- **Unified Audio Feature Extraction:** Extracted `extract_features_from_array()` in `features.py` which is reused directly by `sequences.extract_segment_features()`, eliminating 55 lines of duplicate feature calculation.
+- **Standard Library Counting:** Replaced hand-rolled dictionary iteration loops with `collections.Counter(grams).most_common()` in `sequences.count_ngrams()`.
+- **Dynamic Rule Discovery:** Simplified plug-in loading in `rule_engine.py` using `Path.glob("[!_]*.py")` and `importlib.import_module()`.
+- **Pytest Fixtures:** Introduced `tests/conftest.py` providing isolated `tmp_db` and `make_wav_bytes` fixtures.
+- **Ruff Linter Configuration:** Added `ruff.toml` enforcing Python 3.12 modern idioms and dead-code prevention.
+- **Pure-NumPy Preservation:** Retained pure-NumPy KNN, SVM, Decision Trees, and KMeans to guarantee 100% reliability on enterprise machines where Windows Device Guard blocks compiled C-extension DLLs.
+
+---
+
 ## 📂 Project Folder Structure
 
 ```

@@ -4,6 +4,7 @@ run each through feature extraction + recognizer.
 No Streamlit imports.
 """
 import os
+from collections import Counter
 import numpy as np
 import librosa
 
@@ -12,7 +13,7 @@ from config import (
     MIN_SEGMENT_DURATION, FEATURE_VECTOR_LEN,
     RECOGNIZE_THRESHOLD, PENDING_MERGE_THRESHOLD,
 )
-from features import extract_features
+from features import extract_features, extract_features_from_array
 
 
 # ── Segment splitting ────────────────────────────────────────────
@@ -50,62 +51,9 @@ def split_audio(path: str, top_db: float = SPLIT_TOP_DB_DEFAULT) -> list[dict]:
 def extract_segment_features(segment_y: np.ndarray, sr: int = FEATURE_SR) -> tuple[list[float], dict]:
     """
     Extract features from a raw audio segment (numpy array).
-    Like extract_features() but works on a pre-split numpy array
-    instead of a file path.
+    Reuses the core extraction pipeline from features module.
     """
-    from config import (
-        N_MFCC, SILENCE_TOP_DB, PITCH_FMIN, PITCH_FMAX,
-        N_FFT, HOP_LENGTH,
-    )
-
-    y = segment_y
-    duration = float(len(y) / sr)
-
-    # MFCC
-    mfcc = librosa.feature.mfcc(
-        y=y, sr=sr, n_mfcc=N_MFCC, n_fft=N_FFT, hop_length=HOP_LENGTH,
-    )
-    mfcc_mean = np.mean(mfcc, axis=1)
-    mfcc_std = np.std(mfcc, axis=1)
-
-    # Pitch
-    f0, voiced, _ = librosa.pyin(
-        y, fmin=PITCH_FMIN, fmax=PITCH_FMAX, sr=sr,
-        hop_length=HOP_LENGTH,
-    )
-    f0_valid = f0[~np.isnan(f0)]
-    if len(f0_valid) == 0:
-        pitch_mean, pitch_std = 0.0, 0.0
-    else:
-        pitch_mean = float(np.mean(f0_valid))
-        pitch_std = float(np.std(f0_valid))
-
-    # Spectral centroid
-    cent = librosa.feature.spectral_centroid(
-        y=y, sr=sr, n_fft=N_FFT, hop_length=HOP_LENGTH,
-    )[0]
-    cent_mean = float(np.mean(cent))
-    cent_std = float(np.std(cent))
-
-    vector = (
-        mfcc_mean.tolist()
-        + mfcc_std.tolist()
-        + [pitch_mean, pitch_std]
-        + [cent_mean, cent_std]
-        + [duration]
-    )
-
-    raw = {
-        "duration": duration,
-        "mfcc_mean": mfcc_mean.tolist(),
-        "mfcc_std": mfcc_std.tolist(),
-        "pitch_mean": pitch_mean,
-        "pitch_std": pitch_std,
-        "centroid_mean": cent_mean,
-        "centroid_std": cent_std,
-    }
-
-    return vector, raw
+    return extract_features_from_array(segment_y, sr=sr)
 
 
 # ── Recognize a full sequence ────────────────────────────────────
@@ -170,13 +118,8 @@ def count_ngrams(labels: list[str], n: int) -> dict[str, int]:
     """
     if len(labels) < n:
         return {}
-
-    counts: dict[str, int] = {}
-    for i in range(len(labels) - n + 1):
-        gram = " ".join(labels[i : i + n])
-        counts[gram] = counts.get(gram, 0) + 1
-
-    return dict(sorted(counts.items(), key=lambda x: -x[1]))
+    grams = (" ".join(labels[i : i + n]) for i in range(len(labels) - n + 1))
+    return dict(Counter(grams).most_common())
 
 
 def compare_phrase_vs_words(

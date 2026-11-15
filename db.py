@@ -2,8 +2,8 @@
 UCS Database — schema, CRUD helpers, and migrations.
 Auto-backs up ucs.db before any migration.
 """
+from pathlib import Path
 import json
-import os
 import shutil
 import sqlite3
 from datetime import datetime, timezone
@@ -98,13 +98,15 @@ CREATE TABLE IF NOT EXISTS history (
 
 def _backup_db() -> str | None:
     """Copy ucs.db → backups/ucs_<timestamp>.db. Returns backup path."""
-    if not os.path.exists(DB_PATH):
+    db_file = Path(DB_PATH)
+    if not db_file.is_file():
         return None
-    os.makedirs(BACKUP_DIR, exist_ok=True)
+    backup_dir = Path(BACKUP_DIR)
+    backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dst = os.path.join(BACKUP_DIR, f"ucs_{stamp}.db")
-    shutil.copy2(DB_PATH, dst)
-    return dst
+    dst = backup_dir / f"ucs_{stamp}.db"
+    shutil.copy2(str(db_file), str(dst))
+    return str(dst)
 
 
 def _current_version(conn: sqlite3.Connection) -> int:

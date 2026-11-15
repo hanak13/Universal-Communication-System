@@ -10,8 +10,8 @@ Classifiers:
 All pure-numpy because scikit-learn .pyd DLLs are blocked by Device Guard
 on the project machine.
 """
+from pathlib import Path
 import json
-import os
 import numpy as np
 from datetime import datetime, timezone
 from collections import Counter
@@ -608,13 +608,14 @@ def export_report(conn, output_path: str | None = None) -> str:
     report_md = generate_report(eval_result)
 
     if output_path is None:
-        reports_dir = os.path.join(BASE_DIR, "reports")
-        os.makedirs(reports_dir, exist_ok=True)
+        reports_dir = Path(BASE_DIR) / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(reports_dir, f"evaluation_{stamp}.md")
+        out_file = reports_dir / f"evaluation_{stamp}.md"
+    else:
+        out_file = Path(output_path)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(report_md)
-
-    return output_path
+    out_file.write_text(report_md, encoding="utf-8")
+    return str(out_file)
 

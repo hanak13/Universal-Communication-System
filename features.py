@@ -66,13 +66,12 @@ def _spectral_centroid_stats(y: np.ndarray, sr: int) -> tuple[float, float]:
 
 # ── Public API ────────────────────────────────────────────────────
 
-def extract_features(path: str) -> tuple[list[float], dict]:
+def extract_features_from_array(y: np.ndarray, sr: int = FEATURE_SR) -> tuple[list[float], dict]:
     """
-    Analyse an audio file and return:
-      vector  – list of FEATURE_VECTOR_LEN floats (for DB storage / ML)
-      raw     – dict with labelled values + numpy arrays for plotting
+    Extract features directly from a 1D audio numpy array and return:
+      vector – list of FEATURE_VECTOR_LEN floats (for DB storage / ML)
+      raw    – dict with labelled values + numpy arrays for plotting
     """
-    y, sr = _load_and_prepare(path)
     duration = float(len(y) / sr)
 
     mfcc_mean, mfcc_std = _mfcc_stats(y, sr)
@@ -110,4 +109,12 @@ def extract_features(path: str) -> tuple[list[float], dict]:
     }
 
     return vector, raw
+
+
+def extract_features(path: str) -> tuple[list[float], dict]:
+    """
+    Analyse an audio file and return (vector, raw).
+    """
+    y, sr = _load_and_prepare(path)
+    return extract_features_from_array(y, sr)
 

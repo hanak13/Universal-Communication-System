@@ -1,13 +1,13 @@
 """
 UCS Configuration — all thresholds and paths in one place.
 """
-import os
+from pathlib import Path
 
 # ── Paths ──────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "ucs.db")
-AUDIO_DIR = os.path.join(BASE_DIR, "recordings")
-BACKUP_DIR = os.path.join(BASE_DIR, "backups")
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = str(BASE_DIR / "ucs.db")
+AUDIO_DIR = str(BASE_DIR / "recordings")
+BACKUP_DIR = str(BASE_DIR / "backups")
 
 # ── Audio defaults ─────────────────────────────────────────────────
 SAMPLE_RATE = 44100          # Hz
@@ -41,7 +41,7 @@ KNN_NEIGHBORS = 3             # k for KNN recognizer
 TSNE_PERPLEXITY = 5           # t-SNE perplexity (low for small datasets)
 DBSCAN_EPS_DEFAULT = 5.0      # DBSCAN default eps
 DBSCAN_MIN_SAMPLES_DEFAULT = 2  # DBSCAN default min_samples
-SCALER_PATH = os.path.join(BASE_DIR, "models", "scaler.json")
+SCALER_PATH = str(BASE_DIR / "models" / "scaler.json")
 MIN_CLIPS_FOR_CLUSTERING = 4  # minimum clips to attempt clustering
 
 # ── Words & Confidence (Phase 4) ─────────────────────────────────
