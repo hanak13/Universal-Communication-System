@@ -1,0 +1,308 @@
+/* ==========================================================================
+   Universal Communication System (UCS) — Clean, Modern UI Styles
+   ========================================================================== */
+
+:root {
+    --primary: #2563eb;
+    --primary-light: #eff6ff;
+    --primary-dark: #1d4ed8;
+    --accent: #d97706;
+    --accent-light: #fef3c7;
+    --success: #16a34a;
+    --success-light: #dcfce7;
+    --danger: #dc2626;
+    --danger-light: #fee2e2;
+    --card-radius: 14px;
+    --chip-radius: 20px;
+    --border-color: rgba(148, 163, 184, 0.25);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+}
+
+/* Talk Page Center Layout */
+.talk-container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 0.5rem 0.25rem 2rem 0.25rem;
+}
+
+/* Header Banner */
+.page-header {
+    margin-bottom: 1.5rem;
+}
+
+.page-title {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    margin-bottom: 0.25rem;
+}
+
+.page-subtitle {
+    font-size: 0.95rem;
+    opacity: 0.8;
+    margin-top: 0;
+    line-height: 1.4;
+}
+
+/* Sidebar Branding */
+.sidebar-brand {
+    padding: 0.5rem 0 1rem 0;
+}
+
+.sidebar-brand-title {
+    font-size: 1.25rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+}
+
+.sidebar-brand-sub {
+    display: block;
+    font-size: 0.75rem;
+    opacity: 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Word Chips Grid */
+.chip-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: flex-start;
+    margin: 1rem 0;
+}
+
+.chip-box {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    border-radius: var(--chip-radius);
+    padding: 0.5rem 1rem;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: var(--shadow-sm);
+}
+
+.chip-box:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+/* Known Word Chip */
+.chip-known {
+    background-color: #2563eb;
+    color: #ffffff;
+    border: 1px solid #1d4ed8;
+}
+
+.chip-known .chip-label {
+    font-size: 1.05rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+
+.chip-known .chip-sub {
+    font-size: 0.78rem;
+    opacity: 0.9;
+    font-style: italic;
+}
+
+/* Unknown Word Chip */
+.chip-unknown {
+    background-color: #fffbeb;
+    color: #92400e;
+    border: 2px dashed #f59e0b;
+}
+
+.chip-unknown .chip-label {
+    font-size: 1.05rem;
+    font-weight: 700;
+}
+
+.chip-unknown .chip-sub {
+    font-size: 0.75rem;
+    color: #b45309;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* Low-Confidence Chip */
+.chip-warning {
+    background-color: #fef2f2;
+    color: #991b1b;
+    border: 1.5px solid #f87171;
+}
+
+.chip-warning .chip-label {
+    font-size: 1.05rem;
+    font-weight: 700;
+}
+
+.chip-warning .chip-sub {
+    font-size: 0.75rem;
+    color: #b91c1c;
+}
+
+/* Skipped Chip */
+.chip-skipped {
+    background-color: #f1f5f9;
+    color: #475569;
+    border: 1px solid #cbd5e1;
+}
+
+.chip-skipped .chip-label {
+    font-size: 0.95rem;
+    font-weight: 600;
+    font-style: italic;
+}
+
+.chip-skipped .chip-sub {
+    font-size: 0.72rem;
+    opacity: 0.7;
+}
+
+/* Result Sentence Card */
+.sentence-card {
+    border-radius: var(--card-radius);
+    padding: 1.25rem 1.5rem;
+    background: linear-gradient(135deg, rgba(37, 99, 235, 0.05) 0%, rgba(16, 185, 129, 0.05) 100%);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+    margin: 1.5rem 0;
+}
+
+.sentence-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.sentence-meaning {
+    font-size: 1.05rem;
+    opacity: 0.95;
+    margin-bottom: 0.75rem;
+}
+
+/* Status Badges */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.2rem 0.65rem;
+    border-radius: 9999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.status-verified {
+    background-color: #dcfce7;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+}
+
+.status-unverified {
+    background-color: #fef3c7;
+    color: #b45309;
+    border: 1px solid #fde68a;
+}
+
+/* Empty State Card */
+.empty-state-card {
+    border: 1.5px dashed var(--border-color);
+    border-radius: var(--card-radius);
+    padding: 2rem 2.25rem;
+    background-color: rgba(241, 245, 249, 0.4);
+    margin: 1.5rem 0;
+}
+
+.empty-state-card h3 {
+    margin-top: 0;
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+.empty-state-card ol {
+    margin: 1rem 0 0 1.25rem;
+    padding: 0;
+    line-height: 1.6;
+}
+
+/* Feedback Buttons Customization */
+div[data-testid="stButton"] > button.right-btn-green,
+.st-key-dash_sent_right_btn button {
+    background-color: #16a34a !important;
+    color: white !important;
+    border-color: #15803d !important;
+    font-weight: 600 !important;
+}
+
+div[data-testid="stButton"] > button.right-btn-green:hover,
+.st-key-dash_sent_right_btn button:hover {
+    background-color: #15803d !important;
+    color: white !important;
+}
+
+div[data-testid="stButton"] > button.wrong-btn-red,
+.st-key-dash_sent_wrong_btn button {
+    background-color: #dc2626 !important;
+    color: white !important;
+    border-color: #b91c1c !important;
+    font-weight: 600 !important;
+}
+
+div[data-testid="stButton"] > button.wrong-btn-red:hover,
+.st-key-dash_sent_wrong_btn button:hover {
+    background-color: #b91c1c !important;
+    color: white !important;
+}
+
+/* Teach Form Card */
+.teach-form-card {
+    background: rgba(248, 250, 252, 0.7);
+    border-radius: var(--card-radius);
+    border: 1px solid var(--border-color);
+    padding: 1.25rem;
+    margin: 1rem 0;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+    .chip-unknown {
+        background-color: #451a03;
+        color: #fde68a;
+        border-color: #d97706;
+    }
+    .chip-warning {
+        background-color: #450a0a;
+        color: #fca5a5;
+        border-color: #ef4444;
+    }
+    .chip-skipped {
+        background-color: #1e293b;
+        color: #94a3b8;
+        border-color: #334155;
+    }
+    .empty-state-card {
+        background-color: rgba(30, 41, 59, 0.4);
+    }
+    .sentence-card {
+        background: linear-gradient(135deg, rgba(37, 99, 235, 0.15) 0%, rgba(16, 185, 129, 0.1) 100%);
+    }
+    .status-verified {
+        background-color: #052e16;
+        color: #86efac;
+        border-color: #14532d;
+    }
+    .status-unverified {
+        background-color: #451a03;
+        color: #fde68a;
+        border-color: #78350f;
+    }
+    .teach-form-card {
+        background: rgba(30, 41, 59, 0.7);
+    }
+}

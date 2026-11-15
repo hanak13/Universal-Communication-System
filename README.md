@@ -46,6 +46,66 @@ The application will launch in your default web browser at `http://localhost:850
 
 ---
 
+## 🎨 UI & Theming
+
+UCS features a calm, modern, and accessible design system optimized for high readability during linguistic fieldwork and hypothesis evaluation.
+
+### Navigation Architecture
+The sidebar groups the 12 system pages into 3 functional workflow sections:
+- **💬 Talk**:
+  - `🏠 Dashboard`: Main conversation screen for recording/uploading clips, continuous word chip decoding, inline hypothesis capture, and sentence verification.
+- **🌱 Teach**:
+  - `🎙️ Record`: Record individual words or phrases.
+  - `📚 Library`: Browse recorded audio clips with speaker/label filters.
+  - `📝 Words`: Word dictionary with confidence meters, status badges, and spelling variants.
+  - `❓ Pending`: Catalog of unassigned acoustic clusters (`new_word_N`) ready to be named.
+  - `📏 Rules`: Grammar rule builder (word order and pronoun-verb agreement).
+- **🔍 Review**:
+  - `✅ Test`: Interactive hypothesis testing with Right/Wrong feedback.
+  - `📋 Summary`: Overview table of vocabulary, tests, and evidence levels.
+  - `📊 Analysis`: Waveform, spectrogram, and MFCC inspection.
+  - `🔬 Clustering`: K-Means / DBSCAN acoustic clustering and 2D PCA/t-SNE projections.
+  - `🔗 Sequences`: Continuous sequence splitting and rule-assisted decoding.
+  - `📈 Evaluation`: Speaker holdout split, classifier comparison, noise robustness, and report export.
+
+*(A persistent **↩️ Undo last change** button sits at the bottom of the sidebar with non-blocking toast feedback).*
+
+### Theme Configuration (`.streamlit/config.toml`)
+The application defines primary palette and layout properties in `.streamlit/config.toml`:
+- **Primary Color:** `#2563EB` (calm royal blue)
+- **Background:** Clean neutral background (`#F8FAFC` light / `#0F172A` dark)
+- **Secondary Background:** Clean card background (`#FFFFFF` light / `#1E293B` dark)
+- **Font:** Clean sans-serif system font stack (`Inter`, system-ui)
+- **Base Radius:** `0.75rem` for rounded modern cards and buttons
+
+To change theme colors:
+1. Open `.streamlit/config.toml`.
+2. Edit `primaryColor`, `backgroundColor`, or `secondaryBackgroundColor`.
+3. To switch between light and dark mode, toggle `base = "light"` or `base = "dark"`, or select your preference in the Streamlit hamburger menu (Settings → Theme).
+
+### Custom CSS Overrides (`ui/style.css`)
+Loaded once and cached via `@st.cache_data _load_ui_styles()`:
+- **`talk-container`**: Centers the main Talk workspace to a comfortable reading max-width (~900px) preventing horizontal eye strain.
+- **Interactive Word Chips**:
+  - **Known words:** Filled primary badge with meaning caption below (`.chip-known`).
+  - **Unknown sounds:** Dashed accent border with "Teach this word" prompt (`.chip-unknown`).
+  - **Low-confidence / Unverified:** Subtle warning chip with warning icon (`.chip-warning`).
+- **Status Badges**: High-contrast, color-blind accessible badges (`.status-verified` and `.status-unverified`) using both distinct colors and explicit text/icons.
+- **Buttons**: Visually distinguished green **Right** (`#16A34A`) and red **Wrong** (`#DC2626`) actions.
+
+### Taking Demo Screenshots
+1. Launch the app: `.venv\Scripts\python.exe -m streamlit run app.py`.
+2. Navigate to **💬 Talk** (`🏠 Dashboard`).
+3. Record or upload an audio sample (e.g. `tests/test_audio.wav`).
+4. Capture screenshots of:
+   - The compact metrics card row and recording card.
+   - The segmented word chips (known vs unknown).
+   - The inline teaching card under unresolved segments.
+   - The highlighted sentence card with Right/Wrong buttons.
+   - The **📈 Evaluation** page showing the confusion matrix and noise robustness bar chart.
+
+---
+
 ## 📂 Project Folder Structure
 
 ```
