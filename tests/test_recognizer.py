@@ -1,6 +1,6 @@
 """
-tests/test_recognizer.py — recognizer returns "unknown" for far vectors
-and reuses pending names for nearby unknowns.
+tests/test_recognizer.py — recognizer returns "unknown" for far vectors,
+reuses pending names for nearby unknowns, and performs majority voting among K nearest neighbors.
 Run:  python -m pytest tests/ -v
 """
 import os
@@ -122,6 +122,95 @@ def test_recognizer_unfitted():
     assert result["label"] == "unknown"
 
 
+def test_majority_voting_toy_case():
+    """
+    Toy case confirming majority voting fix (issue #1):
+    Nearest sample is class A, but 2 of 3 nearest samples are class B (K=3).
+    1-NN would pick A; majority voting picks B.
+    """
+    r = Recognizer(k=3)
+    v_a = [1.0] * FEATURE_VECTOR_LEN
+    v_b1 = [1.2] * FEATURE_VECTOR_LEN
+    v_b2 = [1.3] * FEATURE_VECTOR_LEN
+    # Query very close to A
+    v_query = [1.05] * FEATURE_VECTOR_LEN
+
+    r.fit([v_a, v_b1, v_b2], ["A", "B", "B"])
+    res = r.recognize(v_query, threshold=50.0)
+
+    # 1-NN would have returned "A"
+    # KNN majority voting must return "B"
+    assert res["label"] == "B"
+    assert not res["is_unknown"]
+    assert res["confidence"] == 2 / 3
+    assert len(res["top3"]) == 2
+    assert res["top3"][0].label == "B"
+    assert res["top3"][0].votes == 2
+    assert res["top3"][1].label == "A"
+    assert res["top3"][1].votes == 1
+
+
+def test_majority_voting_tie_break():
+    """
+    Tie breaking among equal votes:
+    1) Primary: smaller sum of distances among voting samples.
+    2) Secondary: closest single sample.
+    3) Stable fallback: alphabetical label order.
+    """
+    r = Recognizer(k=2)
+    v_a = [1.0] * FEATURE_VECTOR_LEN
+    v_b = [3.0] * FEATURE_VECTOR_LEN
+    v_query = [1.1] * FEATURE_VECTOR_LEN
+
+    r.fit([v_a, v_b], ["A", "B"])
+    res = r.recognize(v_query, threshold=50.0)
+    assert res["label"] == "A"
+    assert res["confidence"] == 1 / 2
+
+
+def test_fewer_samples_than_k():
+    """Works when training set has fewer samples than K."""
+    r = Recognizer(k=5)
+    v1 = [1.0] * FEATURE_VECTOR_LEN
+    v2 = [2.0] * FEATURE_VECTOR_LEN
+    r.fit([v1, v2], ["hello", "bye"])
+    assert r.is_fitted
+    assert r._k == 2
+
+    res = r.recognize(v1, threshold=50.0)
+    assert res["label"] == "hello"
+    assert not res["is_unknown"]
+    assert res["confidence"] == 1.0
+
+
+def test_one_class_data():
+    """Recognizer handles training data containing only a single class."""
+    r = Recognizer(k=3)
+    v1 = [1.0] * FEATURE_VECTOR_LEN
+    v2 = [1.1] * FEATURE_VECTOR_LEN
+    v3 = [1.2] * FEATURE_VECTOR_LEN
+    r.fit([v1, v2, v3], ["solo", "solo", "solo"])
+    assert r.is_fitted
+
+    res = r.recognize([1.05] * FEATURE_VECTOR_LEN, threshold=50.0)
+    assert res["label"] == "solo"
+    assert not res["is_unknown"]
+    assert res["confidence"] == 1.0
+    assert len(res["top3"]) == 1
+    assert res["top3"][0].label == "solo"
+    assert res["top3"][0].votes == 3
+
+
+def test_return_keys_unchanged():
+    """Output dict retains exact expected keys and shapes."""
+    r = Recognizer(k=3)
+    v = [1.0] * FEATURE_VECTOR_LEN
+    r.fit([v], ["word"])
+    res = r.recognize(v, threshold=50.0)
+    expected_keys = {"label", "distance", "top3", "is_unknown", "confidence"}
+    assert set(res.keys()) == expected_keys
+
+
 if __name__ == "__main__":
     test_recognize_known()
     test_recognize_unknown()
@@ -130,5 +219,9 @@ if __name__ == "__main__":
     test_pending_name_new()
     test_pending_name_empty()
     test_recognizer_unfitted()
+    test_majority_voting_toy_case()
+    test_majority_voting_tie_break()
+    test_fewer_samples_than_k()
+    test_one_class_data()
+    test_return_keys_unchanged()
     print("All recognizer tests passed ✓")
-

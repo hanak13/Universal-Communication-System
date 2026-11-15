@@ -455,7 +455,7 @@ if page == "🏠 Dashboard":
                     close_cand = None
                     close_dist = None
                     if target_info["rec"]["top3"]:
-                        top_lbl, top_dst = target_info["rec"]["top3"][0]
+                        top_lbl, top_dst = target_info["rec"]["top3"][0][:2]
                         if top_dst <= DUPLICATE_SOUND_THRESHOLD:
                             close_cand = top_lbl
                             close_dist = top_dst
@@ -1048,7 +1048,8 @@ elif page == "🔬 Clustering":
                 st.metric("Actual", labels_list[idx])
             if result["top3"]:
                 st.write("**Top-3:**", ", ".join(
-                    f"{lbl} ({d:.2f})" for lbl, d in result["top3"]
+                    f"{c[0]} ({c[1]:.2f}, votes: {c[2]})" if len(c) > 2 else f"{c[0]} ({c[1]:.2f})"
+                    for c in result["top3"]
                 ))
             if result["is_unknown"]:
                 st.info("Distance exceeds threshold — would be marked **unknown**.")
