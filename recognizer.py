@@ -10,7 +10,7 @@ from config import (
     PENDING_MERGE_THRESHOLD,
     KNN_NEIGHBORS,
 )
-from clustering import fit_scaler, load_scaler, SimpleScaler
+from clustering import fit_scaler, SimpleScaler
 
 
 Candidate = namedtuple("Candidate", ["label", "distance", "votes"])
@@ -84,30 +84,26 @@ class Recognizer:
         candidates: list[Candidate] = []
         for lbl, d_list in label_dists.items():
             votes = len(d_list)
-            sum_d = float(sum(d_list))
             min_d = float(min(d_list))
-            mean_d = float(sum_d / votes)
-            candidates.append(Candidate(label=lbl, distance=mean_d, votes=votes))
+            candidates.append(Candidate(label=lbl, distance=min_d, votes=votes))
 
         candidates.sort(
             key=lambda c: (
                 -c.votes,                      # highest vote count first
-                sum(label_dists[c.label]),     # smaller sum of distances
-                min(label_dists[c.label]),     # closest individual sample
+                sum(label_dists[c.label]),     # smaller sum of distances among voting samples
+                c.distance,                    # closest individual sample (min_d)
                 c.label                        # stable tie-breaker
             )
         )
 
         winner = candidates[0]
-        # The returned distance is the mean distance of the winning label's voting samples
-        # among the K nearest neighbors. This represents the average acoustic distance
-        # to the cluster of supporting exemplars, rather than relying on a single outlier sample.
+        # Distance to the closest exemplar of the winning class among K nearest neighbors.
+        # This reflects true acoustic proximity to the nearest confirmed recording of the
+        # winning label without falsely penalizing words that have multiple training exemplars.
         winning_dist = winner.distance
-        confidence = float(winner.votes / k) if k > 0 else 0.0
-
-        # 5. Apply unknown distance threshold consistently to the winning label's mean distance
         is_unknown = winning_dist > thresh
         predicted_label = "unknown" if is_unknown else winner.label
+        confidence = float(winner.votes / k) if (k > 0 and not is_unknown) else 0.0
 
         # 6. Top-3 candidates ranked by votes and distance
         top3 = candidates[:3]

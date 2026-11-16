@@ -54,6 +54,7 @@ def test_recognize_unknown():
     assert result["is_unknown"]
     assert result["label"] == "unknown"
     assert result["distance"] > RECOGNIZE_THRESHOLD
+    assert result["confidence"] == 0.0
 
 
 def test_recognize_top3():
@@ -177,10 +178,20 @@ def test_fewer_samples_than_k():
     assert r.is_fitted
     assert r._k == 2
 
+    # Tied 1-1 among 2 samples -> confidence is 1/2
     res = r.recognize(v1, threshold=50.0)
     assert res["label"] == "hello"
     assert not res["is_unknown"]
-    assert res["confidence"] == 1.0
+    assert res["confidence"] == 1 / 2
+
+    # Single sample training data (N=1 < K=5) -> k=1, unanimous 1.0 confidence
+    r_solo = Recognizer(k=5)
+    r_solo.fit([v1], ["hello"])
+    assert r_solo._k == 1
+    res_solo = r_solo.recognize(v1, threshold=50.0)
+    assert res_solo["label"] == "hello"
+    assert not res_solo["is_unknown"]
+    assert res_solo["confidence"] == 1.0
 
 
 def test_one_class_data():

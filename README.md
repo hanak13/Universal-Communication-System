@@ -154,7 +154,7 @@ python -m pytest -v
 python3 -m pytest -v
 ```
 
-All 49 unit tests across 9 test suites should pass cleanly.
+All 54 unit tests across 9 test suites should pass cleanly.
 
 ---
 
